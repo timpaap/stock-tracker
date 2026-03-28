@@ -126,6 +126,93 @@ def _fetch_sector_weights(ticker: str) -> dict[str, float] | None:
         return None
 
 
+def _fetch_top_holdings(ticker: str):
+    """Fetch top holdings DataFrame from yfinance. Returns None on failure."""
+    try:
+        df = yf.Ticker(ticker).funds_data.top_holdings
+        if df is not None and not df.empty:
+            return df
+        return None
+    except Exception:
+        return None
+
+
+def get_stock_exposure(positions: list[dict]) -> tuple[list[dict], float]:
+    """
+    Calculate effective EUR exposure to individual stocks across all ETF positions.
+    Multiplies each ETF's current portfolio value by the weight of its top 10 holdings
+    (from yfinance), then aggregates by stock symbol.
+
+    Parameters
+    ----------
+    positions : list of position dicts from portfolio.calculate_positions()
+
+    Returns
+    -------
+    stocks : list[dict]
+        Sorted by effective value (EUR) descending. Each dict:
+        symbol, name, value (EUR), sources (list of ETF names contributing).
+    coverage_pct : float
+        Percentage of total included portfolio value captured (top-10 weight sum per ETF).
+    """
+    priced = [p for p in positions if p.get("current_value") and p["current_value"] > 0]
+    included = [p for p in priced if p["isin"] not in _ISIN_EXCLUDE]
+
+    total_value = sum(p["current_value"] for p in included)
+    covered_value = 0.0
+
+    stock_exposure: dict[str, dict] = {}  # symbol → {name, value, sources}
+
+    for p in included:
+        isin   = p["isin"]
+        name   = p["name"]
+        value  = p["current_value"]
+        ticker = p.get("ticker")
+
+        # Individual stock (manual override) — 100% itself
+        if isin in _ISIN_MANUAL:
+            symbol = ticker or isin
+            if symbol not in stock_exposure:
+                stock_exposure[symbol] = {"name": name, "value": 0.0, "sources": []}
+            stock_exposure[symbol]["value"] += value
+            stock_exposure[symbol]["sources"].append(name)
+            covered_value += value
+            continue
+
+        # ETF: use top 10 holdings from yfinance
+        effective_ticker = _ISIN_TICKER_OVERRIDE.get(isin, ticker)
+        if not effective_ticker:
+            continue
+        df = _fetch_top_holdings(effective_ticker)
+        if df is None:
+            continue
+
+        holdings_sum = df["Holding Percent"].sum()
+        covered_value += value * holdings_sum
+
+        for symbol, row in df.iterrows():
+            stock_value = value * row["Holding Percent"]
+            if symbol not in stock_exposure:
+                stock_exposure[symbol] = {"name": row["Name"], "value": 0.0, "sources": []}
+            stock_exposure[symbol]["value"] += stock_value
+            if name not in stock_exposure[symbol]["sources"]:
+                stock_exposure[symbol]["sources"].append(name)
+
+    result = [
+        {
+            "symbol":  sym,
+            "name":    data["name"],
+            "value":   round(data["value"], 2),
+            "sources": data["sources"],
+        }
+        for sym, data in stock_exposure.items()
+    ]
+    result.sort(key=lambda x: -x["value"])
+
+    coverage_pct = round(covered_value / total_value * 100, 1) if total_value > 0 else 0.0
+    return result, coverage_pct
+
+
 def get_portfolio_breakdown(
     positions: list[dict],
 ) -> tuple[dict[str, float], dict[str, float], list[dict]]:

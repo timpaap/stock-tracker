@@ -485,3 +485,31 @@ with st.expander("Data coverage per position"):
     cov_df["Country data"] = cov_df["Country data"].map({True: "✅ justetf", False: "⚠️ inferred", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
     cov_df["Sector data"]  = cov_df["Sector data"].map({True: "✅ yfinance", False: "❌ no data", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
     st.dataframe(cov_df, width="stretch", hide_index=True)
+
+# --- Individual Stock Exposure ---
+st.subheader("🏢 Individual Stock Exposure")
+st.caption(
+    "Your effective EUR exposure to individual stocks, calculated by multiplying each ETF's "
+    "portfolio value by the weight of its top 10 holdings (Yahoo Finance). "
+    "Diversified world/S&P 500 ETFs typically cover 35–40% of their holdings this way; "
+    "concentrated ETFs (e.g. tech) cover 60–70%. The same stock appearing in multiple ETFs "
+    "is aggregated into a single bar."
+)
+
+with st.spinner("Fetching top 10 holdings per ETF from Yahoo Finance…"):
+    stock_list, stock_coverage = etf_holdings.get_stock_exposure(positions)
+
+st.caption(
+    f"Approximately **{stock_coverage:.1f}%** of your equity portfolio value is captured "
+    "in the chart below (based on top 10 holdings per ETF)."
+)
+st.plotly_chart(charts.stock_exposure_chart(stock_list), key="chart_stocks", width="stretch")
+
+# Show full list in an expander
+with st.expander(f"All {len(stock_list)} stocks"):
+    import pandas as _pd4
+    exp_df = _pd4.DataFrame(stock_list)[["symbol", "name", "value", "sources"]]
+    exp_df.columns = ["Symbol", "Name", "Effective Value (€)", "Via ETF(s)"]
+    exp_df["Effective Value (€)"] = exp_df["Effective Value (€)"].map(lambda x: f"€{x:,.2f}")
+    exp_df["Via ETF(s)"] = exp_df["Via ETF(s)"].map(lambda x: ", ".join(x))
+    st.dataframe(exp_df, width="stretch", hide_index=True)

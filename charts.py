@@ -478,6 +478,60 @@ def region_allocation_chart(region_totals: dict[str, float]) -> go.Figure:
     return fig
 
 
+def stock_exposure_chart(stocks: list[dict], top_n: int = 20) -> go.Figure:
+    """
+    Horizontal bar chart showing effective EUR exposure to individual stocks,
+    aggregated across all ETF positions using their top-10 holdings weights.
+
+    Parameters
+    ----------
+    stocks  : list returned by etf_holdings.get_stock_exposure()
+    top_n   : number of top stocks to display (default 20)
+    """
+    if not stocks:
+        return _empty_figure("No stock exposure data available.")
+
+    top = stocks[:top_n]
+    # Reverse so the largest bar appears at the top
+    top_rev = list(reversed(top))
+
+    labels   = [f"{s['symbol']}" for s in top_rev]
+    names    = [s["name"] for s in top_rev]
+    values   = [s["value"] for s in top_rev]
+    sources  = [", ".join(s["sources"]) for s in top_rev]
+    y_labels = [f"{sym}  <span style='color:#888;font-size:11px'>{nm[:35]}</span>"
+                for sym, nm in zip(labels, names)]
+
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=labels,
+        orientation="h",
+        marker_color="#26a69a",
+        text=[f"€{v:,.0f}" for v in values],
+        textposition="outside",
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "%{customdata[0]}<br>"
+            "Effective value: €%{x:,.0f}<br>"
+            "<i>via: %{customdata[1]}</i>"
+            "<extra></extra>"
+        ),
+        customdata=[[nm, src] for nm, src in zip(names, sources)],
+    ))
+    fig.update_layout(
+        title=dict(
+            text=f"Top {min(top_n, len(stocks))} Individual Stock Exposures (EUR)",
+            font=dict(size=18),
+        ),
+        xaxis=dict(title="Effective EUR Value", tickprefix="€", tickformat=",.0f"),
+        yaxis=dict(title="", automargin=True),
+        margin=dict(t=60, b=40, l=120, r=80),
+        paper_bgcolor="white",
+        height=max(420, len(top) * 30 + 100),
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
