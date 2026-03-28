@@ -41,6 +41,7 @@ import transaction_parser
 import dividend_parser
 import portfolio
 import charts
+import etf_holdings
 
 
 # ---------------------------------------------------------------------------
@@ -433,3 +434,54 @@ if closed_positions:
     )
 else:
     st.info("No fully closed positions found.")
+
+st.markdown("---")
+
+# --- Portfolio Diversification ---
+st.subheader("🌍 Portfolio Diversification")
+st.caption(
+    "Sector data from Yahoo Finance (yfinance). "
+    "Region is inferred from each ETF's investment focus. "
+    "Individual stocks and bond ETFs may show limited sector data."
+)
+
+with st.spinner("Fetching ETF sector data from Yahoo Finance…"):
+    sector_totals, region_totals, coverage, excluded_pct = etf_holdings.get_portfolio_breakdown(positions)
+
+# Side-by-side donut charts
+if excluded_pct > 0:
+    st.caption(
+        f"⚠️ Bond ETFs ({excluded_pct:.1f}% of portfolio value) are excluded from both charts — "
+        "sector and country data is only meaningful for equity positions. "
+        "Percentages shown are relative to the equity portion of your portfolio."
+    )
+div_col1, div_col2 = st.columns(2)
+with div_col1:
+    st.plotly_chart(
+        charts.sector_allocation_chart(sector_totals),
+        key="chart_sector",
+        width="stretch",
+    )
+with div_col2:
+    st.plotly_chart(
+        charts.region_allocation_chart(region_totals),
+        key="chart_region",
+        width="stretch",
+    )
+
+# Coverage table — tells the user what was included
+with st.expander("Data coverage per position"):
+    import pandas as _pd3
+    cov_df = _pd3.DataFrame(coverage)[[
+        "name", "ticker", "weight_pct", "dominant_region", "region_data", "sector_data"
+    ]].rename(columns={
+        "name":           "Product",
+        "ticker":         "Ticker",
+        "weight_pct":     "Weight (%)",
+        "dominant_region":"Dominant Region",
+        "region_data":    "Country data",
+        "sector_data":    "Sector data",
+    })
+    cov_df["Country data"] = cov_df["Country data"].map({True: "✅ justetf", False: "⚠️ inferred", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
+    cov_df["Sector data"]  = cov_df["Sector data"].map({True: "✅ yfinance", False: "❌ no data", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
+    st.dataframe(cov_df, width="stretch", hide_index=True)

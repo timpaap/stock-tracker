@@ -402,6 +402,82 @@ def position_bar_chart(
     return fig
 
 
+def sector_allocation_chart(sector_totals: dict[str, float]) -> go.Figure:
+    """
+    Donut chart of aggregated sector allocation across the whole portfolio.
+
+    Parameters
+    ----------
+    sector_totals : dict returned by etf_holdings.get_portfolio_breakdown()
+    """
+    if not sector_totals:
+        return _empty_figure("No sector data available.\nClick 'Refresh Prices' first.")
+
+    labels = list(sector_totals.keys())
+    values = [round(v * 100, 2) for v in sector_totals.values()]
+
+    fig = go.Figure(go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.45,
+        marker_colors=COLOURS_PIE,
+        textinfo="label+percent",
+        hovertemplate="<b>%{label}</b><br>%{value:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title=dict(text="Sector Allocation (Portfolio-Weighted)", font=dict(size=18)),
+        showlegend=True,
+        legend=dict(orientation="v", x=1.02, y=0.5),
+        margin=dict(t=60, b=20, l=20, r=140),
+        paper_bgcolor="white",
+    )
+    return fig
+
+
+def region_allocation_chart(region_totals: dict[str, float]) -> go.Figure:
+    """
+    Donut chart of inferred regional exposure across the whole portfolio.
+
+    Parameters
+    ----------
+    region_totals : dict returned by etf_holdings.get_portfolio_breakdown()
+    """
+    if not region_totals:
+        return _empty_figure("No region data available.")
+
+    REGION_COLOURS = [
+        "#5c6bc0",  # indigo   — United States
+        "#26a69a",  # teal     — Europe
+        "#ffa726",  # orange   — Emerging Markets
+        "#ab47bc",  # purple   — Global
+        "#29b6f6",  # blue     — Asia
+        "#66bb6a",  # green    — Netherlands
+        "#ec407a",  # pink     — Other
+        "#78909c",  # grey     — Bonds
+        "#8d6e63",  # brown    — Germany/France
+    ]
+
+    labels = list(region_totals.keys())
+    values = [round(v * 100, 2) for v in region_totals.values()]
+
+    fig = go.Figure(go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.45,
+        marker_colors=REGION_COLOURS,
+        textinfo="label+percent",
+        hovertemplate="<b>%{label}</b><br>%{value:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title=dict(text="Regional Exposure (Portfolio-Weighted)", font=dict(size=18)),
+        showlegend=True,
+        legend=dict(orientation="v", x=1.02, y=0.5),
+        margin=dict(t=60, b=20, l=20, r=140),
+        paper_bgcolor="white",
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
