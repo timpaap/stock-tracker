@@ -203,313 +203,330 @@ if not transactions:
     st.stop()
 
 
-# --- Profit overview block ---
-total_unrealized = summary["total_gain"] if summary["prices_available"] else 0.0
-total_dividends  = summary.get("total_dividends", 0.0)
-total_profit     = total_unrealized + total_dividends
+tab1, tab2 = st.tabs(["📊 Portfolio", "🔬 ETF Analysis  ·  Estimates"])
 
-st.subheader("💹 Profit Overview")
-pcol1, pcol2, pcol3 = st.columns(3)
+# ===========================================================================
+# TAB 1 — Exact data (based on your real transactions and live prices)
+# ===========================================================================
+with tab1:
 
-with pcol1:
-    if summary["prices_available"]:
-        sign = "+" if total_profit >= 0 else ""
-        st.metric(
-            label="💹 Total Profit",
-            value=f"{sign}€{total_profit:,.2f}",
-            help="Unrealized gain/loss + dividends received",
-        )
-    else:
+    # --- Profit overview block ---
+    total_unrealized = summary["total_gain"] if summary["prices_available"] else 0.0
+    total_dividends  = summary.get("total_dividends", 0.0)
+    total_profit     = total_unrealized + total_dividends
+
+    st.subheader("💹 Profit Overview")
+    pcol1, pcol2, pcol3 = st.columns(3)
+
+    with pcol1:
+        if summary["prices_available"]:
+            sign = "+" if total_profit >= 0 else ""
+            st.metric(
+                label="💹 Total Profit",
+                value=f"{sign}€{total_profit:,.2f}",
+                help="Unrealized gain/loss + dividends received",
+            )
+        else:
+            sign = "+" if total_dividends >= 0 else ""
+            st.metric(
+                label="💹 Total Profit",
+                value=f"{sign}€{total_dividends:,.2f}",
+                help="Only dividends counted — refresh prices to include unrealized gain",
+            )
+
+    with pcol2:
+        if summary["prices_available"]:
+            gain = summary["total_gain"]
+            sign = "+" if gain >= 0 else ""
+            st.metric(
+                label="📈 Unrealized Gain / Loss",
+                value=f"{sign}€{gain:,.2f}",
+                delta=f"{sign}{summary['total_return_pct']:.2f}%",
+            )
+        else:
+            st.metric(label="📈 Unrealized Gain / Loss", value="—")
+
+    with pcol3:
         sign = "+" if total_dividends >= 0 else ""
         st.metric(
-            label="💹 Total Profit",
+            label="💰 Realized (Dividends)",
             value=f"{sign}€{total_dividends:,.2f}",
-            help="Only dividends counted — refresh prices to include unrealized gain",
         )
 
-with pcol2:
-    if summary["prices_available"]:
-        gain = summary["total_gain"]
-        sign = "+" if gain >= 0 else ""
+    st.markdown("---")
+
+    # --- Summary metric cards ---
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
         st.metric(
-            label="📈 Unrealized Gain / Loss",
-            value=f"{sign}€{gain:,.2f}",
-            delta=f"{sign}{summary['total_return_pct']:.2f}%",
+            label="💶 Net Investment",
+            value=f"€{summary['net_investment']:,.2f}",
         )
-    else:
-        st.metric(label="📈 Unrealized Gain / Loss", value="—")
+    with col2:
+        if summary["prices_available"]:
+            st.metric(
+                label="📊 Current Value",
+                value=f"€{summary['total_value']:,.2f}",
+            )
+        else:
+            st.metric(label="📊 Current Value", value="—",
+                      help="Click 'Refresh Prices' in the sidebar.")
+    with col3:
+        st.metric(label="🗂 Positions", value=summary["num_positions"])
 
-with pcol3:
-    sign = "+" if total_dividends >= 0 else ""
-    st.metric(
-        label="💰 Realized (Dividends)",
-        value=f"{sign}€{total_dividends:,.2f}",
-    )
+    st.markdown("---")
 
-st.markdown("---")
-
-# --- Summary metric cards ---
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.metric(
-        label="💶 Net Investment",
-        value=f"€{summary['net_investment']:,.2f}",
-    )
-with col2:
-    if summary["prices_available"]:
-        st.metric(
-            label="📊 Current Value",
-            value=f"€{summary['total_value']:,.2f}",
+    # --- Charts ---
+    if not prices:
+        st.warning(
+            "⚠️ No price data yet. Click **🔄 Refresh Prices** in the sidebar — "
+            "the charts will fully populate once prices are fetched."
         )
-    else:
-        st.metric(label="📊 Current Value", value="—",
-                  help="Click 'Refresh Prices' in the sidebar.")
-with col3:
-    st.metric(label="🗂 Positions", value=summary["num_positions"])
 
-st.markdown("---")
+    # Row 1: allocation + gain/loss side by side
+    chart_col1, chart_col2 = st.columns(2)
 
-# --- Charts ---
-if not prices:
-    st.warning(
-        "⚠️ No price data yet. Click **🔄 Refresh Prices** in the sidebar — "
-        "the charts will fully populate once prices are fetched."
-    )
+    with chart_col1:
+        st.plotly_chart(
+            charts.allocation_chart(positions),
+            key="chart_allocation",
+            width="stretch",
+        )
 
-# Row 1: allocation + gain/loss side by side
-chart_col1, chart_col2 = st.columns(2)
+    with chart_col2:
+        st.plotly_chart(
+            charts.position_bar_chart(positions, dividends_by_isin),
+            key="chart_bars",
+            width="stretch",
+        )
 
-with chart_col1:
+    # Row 2: portfolio history — full width
     st.plotly_chart(
-        charts.allocation_chart(positions),
-        key="chart_allocation",
+        charts.portfolio_history_chart(transactions, prices, dividends),
+        key="chart_history",
         width="stretch",
     )
 
-with chart_col2:
-    st.plotly_chart(
-        charts.position_bar_chart(positions, dividends_by_isin),
-        key="chart_bars",
-        width="stretch",
-    )
+    st.markdown("---")
 
-# Row 2: portfolio history — full width
-st.plotly_chart(
-    charts.portfolio_history_chart(transactions, prices, dividends),
-    key="chart_history",
-    width="stretch",
-)
+    # --- Transactions table ---
+    st.subheader("All Transactions")
 
-st.markdown("---")
+    if transactions:
+        import pandas as pd
 
-# --- Transactions table ---
-st.subheader("All Transactions")
+        df = pd.DataFrame(transactions)
 
-if transactions:
-    import pandas as pd
+        # Pick and rename columns for display
+        display_cols = {
+            "date":             "Date",
+            "name":             "Product",
+            "isin":             "ISIN",
+            "transaction_type": "Type",
+            "quantity":         "Qty",
+            "price":            "Price (local)",
+            "transaction_fee":  "Fee (€)",
+            "total_eur":        "Total (€)",
+        }
+        df_display = df[[c for c in display_cols if c in df.columns]].rename(columns=display_cols)
+        df_display = df_display.sort_values("Date", ascending=False)
 
-    df = pd.DataFrame(transactions)
+        # Colour BUY rows green, SELL rows red
+        def _row_colour(row):
+            colour = "background-color: #e8f5e9" if row["Type"] == "BUY" else "background-color: #ffebee"
+            return [colour] * len(row)
 
-    # Pick and rename columns for display
-    display_cols = {
-        "date":             "Date",
-        "name":             "Product",
-        "isin":             "ISIN",
-        "transaction_type": "Type",
-        "quantity":         "Qty",
-        "price":            "Price (local)",
-        "transaction_fee":  "Fee (€)",
-        "total_eur":        "Total (€)",
-    }
-    df_display = df[[c for c in display_cols if c in df.columns]].rename(columns=display_cols)
-    df_display = df_display.sort_values("Date", ascending=False)
-
-    # Colour BUY rows green, SELL rows red
-    def _row_colour(row):
-        colour = "background-color: #e8f5e9" if row["Type"] == "BUY" else "background-color: #ffebee"
-        return [colour] * len(row)
-
-    st.dataframe(
-        df_display.style.apply(_row_colour, axis=1),
-        width="stretch",
-        hide_index=True,
-    )
-
-st.markdown("---")
-
-# --- Dividends table ---
-st.subheader("💰 Dividend Income")
-
-if dividends:
-    import pandas as _pd
-    div_df = _pd.DataFrame(dividends)
-
-    # Per-stock summary
-    by_stock = (
-        div_df.groupby(["isin", "name"])
-        .agg(
-            payments  = ("net_eur", "count"),
-            gross_eur = ("gross_eur", "sum"),
-            tax_eur   = ("tax_eur", "sum"),
-            net_eur   = ("net_eur", "sum"),
-        )
-        .reset_index()
-        .rename(columns={
-            "name":     "Product",
-            "isin":     "ISIN",
-            "payments": "# Payments",
-            "gross_eur":"Gross (€)",
-            "tax_eur":  "Tax (€)",
-            "net_eur":  "Net (€)",
-        })
-        .sort_values("Net (€)", ascending=False)
-    )
-    st.dataframe(
-        by_stock.style.format({
-            "Gross (€)": "€{:,.2f}",
-            "Tax (€)":   "€{:,.2f}",
-            "Net (€)":   "€{:,.2f}",
-        }),
-        width="stretch",
-        hide_index=True,
-    )
-
-    with st.expander("Show individual dividend payments"):
-        detail_df = div_df[["date","name","isin","currency_original","amount_original","gross_eur","tax_eur","net_eur"]].copy()
-        detail_df.columns = ["Date","Product","ISIN","Currency","Amount (orig)","Gross (€)","Tax (€)","Net (€)"]
-        detail_df = detail_df.sort_values("Date", ascending=False)
         st.dataframe(
-            detail_df.style.format({
-                "Amount (orig)": "{:,.4f}",
-                "Gross (€)":    "€{:,.2f}",
-                "Tax (€)":      "€{:,.2f}",
-                "Net (€)":      "€{:,.2f}",
+            df_display.style.apply(_row_colour, axis=1),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.markdown("---")
+
+    # --- Dividends table ---
+    st.subheader("💰 Dividend Income")
+
+    if dividends:
+        import pandas as _pd
+        div_df = _pd.DataFrame(dividends)
+
+        # Per-stock summary
+        by_stock = (
+            div_df.groupby(["isin", "name"])
+            .agg(
+                payments  = ("net_eur", "count"),
+                gross_eur = ("gross_eur", "sum"),
+                tax_eur   = ("tax_eur", "sum"),
+                net_eur   = ("net_eur", "sum"),
+            )
+            .reset_index()
+            .rename(columns={
+                "name":     "Product",
+                "isin":     "ISIN",
+                "payments": "# Payments",
+                "gross_eur":"Gross (€)",
+                "tax_eur":  "Tax (€)",
+                "net_eur":  "Net (€)",
+            })
+            .sort_values("Net (€)", ascending=False)
+        )
+        st.dataframe(
+            by_stock.style.format({
+                "Gross (€)": "€{:,.2f}",
+                "Tax (€)":   "€{:,.2f}",
+                "Net (€)":   "€{:,.2f}",
             }),
             width="stretch",
             hide_index=True,
         )
-else:
+
+        with st.expander("Show individual dividend payments"):
+            detail_df = div_df[["date","name","isin","currency_original","amount_original","gross_eur","tax_eur","net_eur"]].copy()
+            detail_df.columns = ["Date","Product","ISIN","Currency","Amount (orig)","Gross (€)","Tax (€)","Net (€)"]
+            detail_df = detail_df.sort_values("Date", ascending=False)
+            st.dataframe(
+                detail_df.style.format({
+                    "Amount (orig)": "{:,.4f}",
+                    "Gross (€)":    "€{:,.2f}",
+                    "Tax (€)":      "€{:,.2f}",
+                    "Net (€)":      "€{:,.2f}",
+                }),
+                width="stretch",
+                hide_index=True,
+            )
+    else:
+        st.info(
+            "No dividend data yet. Upload your DeGiro mutations file "
+            "(*Rekeningmutatieoverzicht*) in the sidebar to track dividend income."
+        )
+
+    st.markdown("---")
+
+    # --- Closed Positions ---
+    st.subheader("📂 Closed Positions")
+
+    closed_positions = portfolio.calculate_closed_positions(transactions)
+
+    if closed_positions:
+        import pandas as _pd2
+        cp_df = _pd2.DataFrame(closed_positions)
+        cp_df = cp_df.rename(columns={
+            "name":           "Product",
+            "isin":           "ISIN",
+            "first_buy":      "First Buy",
+            "last_sell":      "Last Sell",
+            "total_invested": "Cost Basis (€)",
+            "total_proceeds": "Proceeds (€)",
+            "realized_gain":  "Realized P&L (€)",
+            "return_pct":     "Return (%)",
+        })
+
+        def _pnl_colour(row):
+            colour = "background-color: #e8f5e9" if row["Realized P&L (€)"] >= 0 else "background-color: #ffebee"
+            return [colour] * len(row)
+
+        st.dataframe(
+            cp_df.style
+                .apply(_pnl_colour, axis=1)
+                .format({
+                    "Cost Basis (€)":  "€{:,.2f}",
+                    "Proceeds (€)":    "€{:,.2f}",
+                    "Realized P&L (€)": lambda v: f"{'+'if v>=0 else ''}€{v:,.2f}",
+                    "Return (%)": lambda v: f"{'+'if v>=0 else ''}{v:.2f}%",
+                }),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("No fully closed positions found.")
+
+
+# ===========================================================================
+# TAB 2 — Estimates (based on partial ETF data from Yahoo Finance / justetf)
+# ===========================================================================
+with tab2:
     st.info(
-        "No dividend data yet. Upload your DeGiro mutations file "
-        "(*Rekeningmutatieoverzicht*) in the sidebar to track dividend income."
+        "📐 **These charts are estimates, not exact figures.** "
+        "They are calculated from partial ETF data: sector weights and top-10 holdings "
+        "from Yahoo Finance, and country breakdowns from justetf.com. "
+        "They give a directional view of your portfolio exposure — useful for spotting "
+        "concentration risk — but should not be treated as precise measurements."
     )
 
-st.markdown("---")
-
-# --- Closed Positions ---
-st.subheader("📂 Closed Positions")
-
-closed_positions = portfolio.calculate_closed_positions(transactions)
-
-if closed_positions:
-    import pandas as _pd2
-    cp_df = _pd2.DataFrame(closed_positions)
-    cp_df = cp_df.rename(columns={
-        "name":           "Product",
-        "isin":           "ISIN",
-        "first_buy":      "First Buy",
-        "last_sell":      "Last Sell",
-        "total_invested": "Cost Basis (€)",
-        "total_proceeds": "Proceeds (€)",
-        "realized_gain":  "Realized P&L (€)",
-        "return_pct":     "Return (%)",
-    })
-
-    def _pnl_colour(row):
-        colour = "background-color: #e8f5e9" if row["Realized P&L (€)"] >= 0 else "background-color: #ffebee"
-        return [colour] * len(row)
-
-    st.dataframe(
-        cp_df.style
-            .apply(_pnl_colour, axis=1)
-            .format({
-                "Cost Basis (€)":  "€{:,.2f}",
-                "Proceeds (€)":    "€{:,.2f}",
-                "Realized P&L (€)": lambda v: f"{'+'if v>=0 else ''}€{v:,.2f}",
-                "Return (%)": lambda v: f"{'+'if v>=0 else ''}{v:.2f}%",
-            }),
-        width="stretch",
-        hide_index=True,
-    )
-else:
-    st.info("No fully closed positions found.")
-
-st.markdown("---")
-
-# --- Portfolio Diversification ---
-st.subheader("🌍 Portfolio Diversification")
-st.caption(
-    "Sector data from Yahoo Finance (yfinance). "
-    "Region is inferred from each ETF's investment focus. "
-    "Individual stocks and bond ETFs may show limited sector data."
-)
-
-with st.spinner("Fetching ETF sector data from Yahoo Finance…"):
-    sector_totals, region_totals, coverage, excluded_pct = etf_holdings.get_portfolio_breakdown(positions)
-
-# Side-by-side donut charts
-if excluded_pct > 0:
+    # --- Portfolio Diversification ---
+    st.subheader("🌍 Portfolio Diversification")
     st.caption(
-        f"⚠️ Bond ETFs ({excluded_pct:.1f}% of portfolio value) are excluded from both charts — "
-        "sector and country data is only meaningful for equity positions. "
-        "Percentages shown are relative to the equity portion of your portfolio."
-    )
-div_col1, div_col2 = st.columns(2)
-with div_col1:
-    st.plotly_chart(
-        charts.sector_allocation_chart(sector_totals),
-        key="chart_sector",
-        width="stretch",
-    )
-with div_col2:
-    st.plotly_chart(
-        charts.region_allocation_chart(region_totals),
-        key="chart_region",
-        width="stretch",
+        "Sector data from Yahoo Finance (yfinance). "
+        "Country data from justetf.com. "
+        "Individual stocks and bond ETFs may show limited coverage."
     )
 
-# Coverage table — tells the user what was included
-with st.expander("Data coverage per position"):
-    import pandas as _pd3
-    cov_df = _pd3.DataFrame(coverage)[[
-        "name", "ticker", "weight_pct", "dominant_region", "region_data", "sector_data"
-    ]].rename(columns={
-        "name":           "Product",
-        "ticker":         "Ticker",
-        "weight_pct":     "Weight (%)",
-        "dominant_region":"Dominant Region",
-        "region_data":    "Country data",
-        "sector_data":    "Sector data",
-    })
-    cov_df["Country data"] = cov_df["Country data"].map({True: "✅ justetf", False: "⚠️ inferred", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
-    cov_df["Sector data"]  = cov_df["Sector data"].map({True: "✅ yfinance", False: "❌ no data", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
-    st.dataframe(cov_df, width="stretch", hide_index=True)
+    with st.spinner("Fetching ETF sector & country data…"):
+        sector_totals, region_totals, coverage, excluded_pct = etf_holdings.get_portfolio_breakdown(positions)
 
-# --- Individual Stock Exposure ---
-st.subheader("🏢 Individual Stock Exposure")
-st.caption(
-    "Your effective EUR exposure to individual stocks, calculated by multiplying each ETF's "
-    "portfolio value by the weight of its top 10 holdings (Yahoo Finance). "
-    "Diversified world/S&P 500 ETFs typically cover 35–40% of their holdings this way; "
-    "concentrated ETFs (e.g. tech) cover 60–70%. The same stock appearing in multiple ETFs "
-    "is aggregated into a single bar."
-)
+    if excluded_pct > 0:
+        st.caption(
+            f"⚠️ Bond ETFs ({excluded_pct:.1f}% of portfolio value) are excluded from both charts — "
+            "sector and country data is only meaningful for equity positions. "
+            "Percentages shown are relative to the equity portion of your portfolio."
+        )
+    div_col1, div_col2 = st.columns(2)
+    with div_col1:
+        st.plotly_chart(
+            charts.sector_allocation_chart(sector_totals),
+            key="chart_sector",
+            width="stretch",
+        )
+    with div_col2:
+        st.plotly_chart(
+            charts.region_allocation_chart(region_totals),
+            key="chart_region",
+            width="stretch",
+        )
 
-with st.spinner("Fetching top 10 holdings per ETF from Yahoo Finance…"):
-    stock_list, stock_coverage = etf_holdings.get_stock_exposure(positions)
+    with st.expander("Data coverage per position"):
+        import pandas as _pd3
+        cov_df = _pd3.DataFrame(coverage)[[
+            "name", "ticker", "weight_pct", "dominant_region", "region_data", "sector_data"
+        ]].rename(columns={
+            "name":           "Product",
+            "ticker":         "Ticker",
+            "weight_pct":     "Weight (%)",
+            "dominant_region":"Dominant Region",
+            "region_data":    "Country data",
+            "sector_data":    "Sector data",
+        })
+        cov_df["Country data"] = cov_df["Country data"].map({True: "✅ justetf", False: "⚠️ inferred", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
+        cov_df["Sector data"]  = cov_df["Sector data"].map({True: "✅ yfinance", False: "❌ no data", "manual": "✏️ manual", "excluded": "⏭️ excluded"})
+        st.dataframe(cov_df, width="stretch", hide_index=True)
 
-st.caption(
-    f"Approximately **{stock_coverage:.1f}%** of your equity portfolio value is captured "
-    "in the chart below (based on top 10 holdings per ETF)."
-)
-st.plotly_chart(charts.stock_exposure_chart(stock_list), key="chart_stocks", width="stretch")
+    st.markdown("---")
 
-# Show full list in an expander
-with st.expander(f"All {len(stock_list)} stocks"):
-    import pandas as _pd4
-    exp_df = _pd4.DataFrame(stock_list)[["symbol", "name", "value", "sources"]]
-    exp_df.columns = ["Symbol", "Name", "Effective Value (€)", "Via ETF(s)"]
-    exp_df["Effective Value (€)"] = exp_df["Effective Value (€)"].map(lambda x: f"€{x:,.2f}")
-    exp_df["Via ETF(s)"] = exp_df["Via ETF(s)"].map(lambda x: ", ".join(x))
-    st.dataframe(exp_df, width="stretch", hide_index=True)
+    # --- Individual Stock Exposure ---
+    st.subheader("🏢 Individual Stock Exposure")
+    st.caption(
+        "Your effective EUR exposure to individual stocks, calculated by multiplying each ETF's "
+        "portfolio value by the weight of its top 10 holdings (Yahoo Finance). "
+        "Diversified world/S&P 500 ETFs typically cover 35–40% of their holdings this way; "
+        "concentrated ETFs (e.g. tech) cover 60–70%. The same stock appearing in multiple ETFs "
+        "is aggregated into a single bar."
+    )
+
+    with st.spinner("Fetching top 10 holdings per ETF from Yahoo Finance…"):
+        stock_list, stock_coverage = etf_holdings.get_stock_exposure(positions)
+
+    st.caption(
+        f"Approximately **{stock_coverage:.1f}%** of your equity portfolio value is captured "
+        "in the chart below (based on top 10 holdings per ETF)."
+    )
+    st.plotly_chart(charts.stock_exposure_chart(stock_list), key="chart_stocks", width="stretch")
+
+    with st.expander(f"All {len(stock_list)} stocks"):
+        import pandas as _pd4
+        exp_df = _pd4.DataFrame(stock_list)[["symbol", "name", "value", "sources"]]
+        exp_df.columns = ["Symbol", "Name", "Effective Value (€)", "Via ETF(s)"]
+        exp_df["Effective Value (€)"] = exp_df["Effective Value (€)"].map(lambda x: f"€{x:,.2f}")
+        exp_df["Via ETF(s)"] = exp_df["Via ETF(s)"].map(lambda x: ", ".join(x))
+        st.dataframe(exp_df, width="stretch", hide_index=True)
