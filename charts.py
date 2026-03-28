@@ -109,7 +109,11 @@ def allocation_chart(positions: list[dict]) -> go.Figure:
     return fig
 
 
-def portfolio_history_chart(transactions: list[dict], prices: dict[str, dict]) -> go.Figure:
+def portfolio_history_chart(
+    transactions: list[dict],
+    prices: dict[str, dict],
+    dividends: list[dict] | None = None,
+) -> go.Figure:
     """
     Creates a line chart showing how your portfolio value has changed over time,
     compared to how much you have actually invested.
@@ -117,10 +121,12 @@ def portfolio_history_chart(transactions: list[dict], prices: dict[str, dict]) -
     The "Invested" line rises each time you buy shares (a step-function).
     The "Value" line shows what your shares were worth on each calendar day,
     calculated using historical daily closing prices from yfinance.
+    The "Value + Dividends" line adds cumulative dividend income on top.
 
     Parameters:
         transactions: list from database.load_transactions()
         prices      : dict from database.load_prices() — used to get ticker symbols
+        dividends   : optional list from database.load_dividends()
 
     Returns:
         A Plotly Figure object.
@@ -174,9 +180,18 @@ def portfolio_history_chart(transactions: list[dict], prices: dict[str, dict]) -
         except Exception as e:
             print(f"Warning: could not fetch historical prices: {e}")
 
+    # --- Build a sorted list of (date_str, net_eur) for dividends ---
+    sorted_divs = sorted(
+        (d for d in (dividends or []) if d.get("date") and d.get("net_eur") is not None),
+        key=lambda d: d["date"],
+    )
+    div_idx = 0
+    cumulative_div_so_far = 0.0
+
     # --- For each day, calculate cumulative invested and total portfolio value ---
     cumulative_invested = []
     portfolio_values    = []
+    portfolio_plus_divs = []
     plot_dates          = []
 
     sorted_tx = sorted(transactions, key=lambda t: t["date"])
@@ -203,6 +218,11 @@ def portfolio_history_chart(transactions: list[dict], prices: dict[str, dict]) -
                 # you've cashed out more than you ever put in.
                 total_invested_so_far -= abs(t["total_eur"]) if t["total_eur"] is not None else 0.0
             tx_idx += 1
+
+        # Accumulate dividends up to and including this day
+        while div_idx < len(sorted_divs) and sorted_divs[div_idx]["date"] <= str(day_date):
+            cumulative_div_so_far += sorted_divs[div_idx]["net_eur"]
+            div_idx += 1
 
         # Only skip the very first days before any transaction has been made
         if not shares_held and total_invested_so_far == 0:
@@ -239,6 +259,7 @@ def portfolio_history_chart(transactions: list[dict], prices: dict[str, dict]) -
         plot_dates.append(day_date)
         cumulative_invested.append(round(total_invested_so_far, 2))
         portfolio_values.append(round(day_value, 2))
+        portfolio_plus_divs.append(round(day_value + cumulative_div_so_far, 2))
 
     if not plot_dates:
         return _empty_figure("Not enough historical price data to draw chart.\nTry refreshing prices first.")
@@ -246,6 +267,13 @@ def portfolio_history_chart(transactions: list[dict], prices: dict[str, dict]) -
     # --- Build the chart ---
     fig = go.Figure()
 
+    fig.add_trace(go.Scatter(
+        x=plot_dates, y=portfolio_plus_divs,
+        fill=None, mode="lines",
+        line=dict(color="#ffa726", width=2, dash="dot"),
+        name="Value + Dividends",
+        hovertemplate="<b>%{x}</b><br>Value + Dividends: €%{y:,.2f}<extra></extra>",
+    ))
     fig.add_trace(go.Scatter(
         x=plot_dates, y=portfolio_values,
         fill=None, mode="lines",
@@ -364,7 +392,7 @@ def position_bar_chart(
         xaxis_title="Gain / Loss (EUR)",
         xaxis=dict(zeroline=True, zerolinecolor="#aaa", zerolinewidth=1.5),
         yaxis=dict(automargin=True),
-        barmode="group",
+        barmode="stack",
         legend=dict(orientation="h", y=-0.18) if has_dividends else dict(),
         margin=dict(t=60, b=80 if has_dividends else 60, l=20, r=140),
         paper_bgcolor="white",

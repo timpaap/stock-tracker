@@ -248,7 +248,7 @@ with pcol3:
 st.markdown("---")
 
 # --- Summary metric cards ---
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     st.metric(
@@ -265,24 +265,6 @@ with col2:
         st.metric(label="📊 Current Value", value="—",
                   help="Click 'Refresh Prices' in the sidebar.")
 with col3:
-    if summary["prices_available"]:
-        gain  = summary["total_gain"]
-        sign  = "+" if gain >= 0 else ""
-        st.metric(
-            label="📈 Unrealized Gain / Loss",
-            value=f"{sign}€{gain:,.2f}",
-            delta=f"{sign}{summary['total_return_pct']:.2f}%",
-        )
-    else:
-        st.metric(label="📈 Unrealized Gain / Loss", value="—")
-with col4:
-    div_total = summary.get("total_dividends", 0.0)
-    sign = "+" if div_total >= 0 else ""
-    st.metric(
-        label="💰 Dividends Received",
-        value=f"{sign}€{div_total:,.2f}",
-    )
-with col5:
     st.metric(label="🗂 Positions", value=summary["num_positions"])
 
 st.markdown("---")
@@ -313,7 +295,7 @@ with chart_col2:
 
 # Row 2: portfolio history — full width
 st.plotly_chart(
-    charts.portfolio_history_chart(transactions, prices),
+    charts.portfolio_history_chart(transactions, prices, dividends),
     key="chart_history",
     width="stretch",
 )
