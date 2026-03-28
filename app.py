@@ -180,11 +180,12 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Load data
 # ---------------------------------------------------------------------------
-transactions = database.load_transactions()
-prices       = database.load_prices()
-dividends    = database.load_dividends()
-positions    = portfolio.calculate_positions(transactions, prices)
-summary      = portfolio.calculate_portfolio_summary(positions, transactions, dividends)
+transactions      = database.load_transactions()
+prices            = database.load_prices()
+dividends         = database.load_dividends()
+dividends_by_isin = database.load_dividends_by_isin()
+positions         = portfolio.calculate_positions(transactions, prices)
+summary           = portfolio.calculate_portfolio_summary(positions, transactions, dividends)
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +201,51 @@ if not transactions:
     )
     st.stop()
 
+
+# --- Profit overview block ---
+total_unrealized = summary["total_gain"] if summary["prices_available"] else 0.0
+total_dividends  = summary.get("total_dividends", 0.0)
+total_profit     = total_unrealized + total_dividends
+
+st.subheader("💹 Profit Overview")
+pcol1, pcol2, pcol3 = st.columns(3)
+
+with pcol1:
+    if summary["prices_available"]:
+        sign = "+" if total_profit >= 0 else ""
+        st.metric(
+            label="💹 Total Profit",
+            value=f"{sign}€{total_profit:,.2f}",
+            help="Unrealized gain/loss + dividends received",
+        )
+    else:
+        sign = "+" if total_dividends >= 0 else ""
+        st.metric(
+            label="💹 Total Profit",
+            value=f"{sign}€{total_dividends:,.2f}",
+            help="Only dividends counted — refresh prices to include unrealized gain",
+        )
+
+with pcol2:
+    if summary["prices_available"]:
+        gain = summary["total_gain"]
+        sign = "+" if gain >= 0 else ""
+        st.metric(
+            label="📈 Unrealized Gain / Loss",
+            value=f"{sign}€{gain:,.2f}",
+            delta=f"{sign}{summary['total_return_pct']:.2f}%",
+        )
+    else:
+        st.metric(label="📈 Unrealized Gain / Loss", value="—")
+
+with pcol3:
+    sign = "+" if total_dividends >= 0 else ""
+    st.metric(
+        label="💰 Realized (Dividends)",
+        value=f"{sign}€{total_dividends:,.2f}",
+    )
+
+st.markdown("---")
 
 # --- Summary metric cards ---
 col1, col2, col3, col4, col5 = st.columns(5)
@@ -260,7 +306,7 @@ with chart_col1:
 
 with chart_col2:
     st.plotly_chart(
-        charts.position_bar_chart(positions),
+        charts.position_bar_chart(positions, dividends_by_isin),
         key="chart_bars",
         width="stretch",
     )

@@ -291,15 +291,20 @@ def portfolio_history_chart(transactions: list[dict], prices: dict[str, dict]) -
     return fig
 
 
-def position_bar_chart(positions: list[dict]) -> go.Figure:
+def position_bar_chart(
+    positions: list[dict],
+    dividends_by_isin: dict[str, float] | None = None,
+) -> go.Figure:
     """
     Creates a horizontal bar chart showing gain/loss per position.
 
-    Each bar represents one stock/ETF you currently hold.
-    Green bars = profit, red bars = loss.
+    Each position has two bars:
+      - Unrealized Gain / Loss  (teal = profit, red = loss)
+      - Realized (Dividends)    (orange/gold, only when dividend data is provided)
 
     Parameters:
-        positions: list returned by portfolio.calculate_positions()
+        positions        : list returned by portfolio.calculate_positions()
+        dividends_by_isin: optional dict of isin → total net dividends in EUR
 
     Returns:
         A Plotly Figure object.
@@ -308,40 +313,63 @@ def position_bar_chart(positions: list[dict]) -> go.Figure:
     if not priced:
         return _empty_figure("No price data available yet.\nClick 'Refresh Prices' to fetch live prices.")
 
-    priced = sorted(priced, key=lambda p: p["unrealized_gain"])
+    div_map = dividends_by_isin or {}
 
-    names  = [_shorten(p["name"]) for p in priced]
-    gains  = [p["unrealized_gain"] for p in priced]
-    pcts   = [p["return_pct"] for p in priced]
-    colors = [COLOUR_PROFIT if g >= 0 else COLOUR_LOSS for g in gains]
+    # Sort by total gain (unrealized + dividends), smallest first
+    priced = sorted(
+        priced,
+        key=lambda p: p["unrealized_gain"] + div_map.get(p["isin"], 0.0),
+    )
 
-    bar_text = [
+    names      = [_shorten(p["name"]) for p in priced]
+    unrealized = [p["unrealized_gain"] for p in priced]
+    pcts       = [p["return_pct"] for p in priced]
+    realized   = [div_map.get(p["isin"], 0.0) for p in priced]
+
+    unr_colors = [COLOUR_PROFIT if g >= 0 else COLOUR_LOSS for g in unrealized]
+    unr_text = [
         f"{'+'if g>=0 else ''}€{g:,.2f}  ({'+'if r>=0 else ''}{r:.1f}%)"
-        for g, r in zip(gains, pcts)
+        for g, r in zip(unrealized, pcts)
     ]
+    div_text = [f"+€{d:,.2f}" if d > 0 else "" for d in realized]
 
-    fig = go.Figure(go.Bar(
-        x=gains,
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=unrealized,
         y=names,
         orientation="h",
-        marker_color=colors,
-        text=bar_text,
+        name="Unrealized Gain / Loss",
+        marker_color=unr_colors,
+        text=unr_text,
         textposition="outside",
-        hovertemplate=(
-            "<b>%{y}</b><br>"
-            "Gain/Loss: €%{x:,.2f}<extra></extra>"
-        ),
+        hovertemplate="<b>%{y}</b><br>Unrealized: €%{x:,.2f}<extra></extra>",
     ))
 
+    if any(d > 0 for d in realized):
+        fig.add_trace(go.Bar(
+            x=realized,
+            y=names,
+            orientation="h",
+            name="Realized (Dividends)",
+            marker_color="#ffa726",   # orange/gold
+            text=div_text,
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>Dividends: €%{x:,.2f}<extra></extra>",
+        ))
+
+    has_dividends = any(d > 0 for d in realized)
     fig.update_layout(
         title=dict(text="Gain / Loss per Position", font=dict(size=18)),
-        xaxis_title="Unrealized Gain / Loss (EUR)",
+        xaxis_title="Gain / Loss (EUR)",
         xaxis=dict(zeroline=True, zerolinecolor="#aaa", zerolinewidth=1.5),
         yaxis=dict(automargin=True),
-        margin=dict(t=60, b=60, l=20, r=120),
+        barmode="group",
+        legend=dict(orientation="h", y=-0.18) if has_dividends else dict(),
+        margin=dict(t=60, b=80 if has_dividends else 60, l=20, r=140),
         paper_bgcolor="white",
         plot_bgcolor="#fafafa",
-        showlegend=False,
+        showlegend=has_dividends,
     )
     return fig
 
