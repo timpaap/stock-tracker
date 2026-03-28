@@ -255,6 +255,68 @@ def calculate_positions(transactions: list[dict], prices: dict[str, dict]) -> li
     return positions
 
 
+def calculate_closed_positions(transactions: list[dict]) -> list[dict]:
+    """
+    Returns a list of positions that have been fully sold (shares_held ≤ 0).
+    For each closed position, calculates the realized P&L using the average
+    cost basis method: as shares are sold, the proportion of the remaining
+    cost basis is released and compared to the actual sale proceeds.
+    """
+    by_isin: dict[str, list[dict]] = {}
+    for t in transactions:
+        by_isin.setdefault(t["isin"], []).append(t)
+
+    closed = []
+
+    for isin, trades in by_isin.items():
+        shares_held    = 0.0
+        cost_basis     = 0.0
+        total_proceeds = 0.0
+        realized_gain  = 0.0
+        first_buy      = None
+        last_sell      = None
+
+        for t in sorted(trades, key=lambda x: (x["date"], x["time"])):
+            qty   = t["quantity"]
+            total = abs(t["total_eur"]) if t.get("total_eur") is not None else 0.0
+
+            if t["transaction_type"] == "BUY":
+                shares_held += qty
+                cost_basis  += total
+                if first_buy is None:
+                    first_buy = t["date"]
+
+            elif t["transaction_type"] == "SELL" and shares_held > 0:
+                fraction        = min(qty / shares_held, 1.0)
+                cost_of_sold    = cost_basis * fraction
+                realized_gain  += total - cost_of_sold
+                total_proceeds += total
+                cost_basis     -= cost_of_sold
+                shares_held    -= qty
+                shares_held     = max(shares_held, 0.0)
+                last_sell       = t["date"]
+
+        if shares_held > 0.0001:
+            continue  # still open
+
+        total_invested = total_proceeds - realized_gain  # original cost of sold shares
+        return_pct = (realized_gain / total_invested * 100) if total_invested > 0 else 0.0
+
+        closed.append({
+            "isin":           isin,
+            "name":           trades[0]["name"],
+            "first_buy":      first_buy,
+            "last_sell":      last_sell,
+            "total_invested": round(total_invested, 2),
+            "total_proceeds": round(total_proceeds, 2),
+            "realized_gain":  round(realized_gain, 2),
+            "return_pct":     round(return_pct, 2),
+        })
+
+    closed.sort(key=lambda p: p["realized_gain"], reverse=True)
+    return closed
+
+
 def calculate_portfolio_summary(positions: list[dict], transactions: list[dict] | None = None, dividends: list[dict] | None = None) -> dict:
     # Net investment = total paid for buys minus total received from sells.
     # This can go negative when you've cashed out more than you ever put in.

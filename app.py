@@ -393,3 +393,43 @@ else:
         "No dividend data yet. Upload your DeGiro mutations file "
         "(*Rekeningmutatieoverzicht*) in the sidebar to track dividend income."
     )
+
+st.markdown("---")
+
+# --- Closed Positions ---
+st.subheader("📂 Closed Positions")
+
+closed_positions = portfolio.calculate_closed_positions(transactions)
+
+if closed_positions:
+    import pandas as _pd2
+    cp_df = _pd2.DataFrame(closed_positions)
+    cp_df = cp_df.rename(columns={
+        "name":           "Product",
+        "isin":           "ISIN",
+        "first_buy":      "First Buy",
+        "last_sell":      "Last Sell",
+        "total_invested": "Cost Basis (€)",
+        "total_proceeds": "Proceeds (€)",
+        "realized_gain":  "Realized P&L (€)",
+        "return_pct":     "Return (%)",
+    })
+
+    def _pnl_colour(row):
+        colour = "background-color: #e8f5e9" if row["Realized P&L (€)"] >= 0 else "background-color: #ffebee"
+        return [colour] * len(row)
+
+    st.dataframe(
+        cp_df.style
+            .apply(_pnl_colour, axis=1)
+            .format({
+                "Cost Basis (€)":  "€{:,.2f}",
+                "Proceeds (€)":    "€{:,.2f}",
+                "Realized P&L (€)": lambda v: f"{'+'if v>=0 else ''}€{v:,.2f}",
+                "Return (%)": lambda v: f"{'+'if v>=0 else ''}{v:.2f}%",
+            }),
+        width="stretch",
+        hide_index=True,
+    )
+else:
+    st.info("No fully closed positions found.")
