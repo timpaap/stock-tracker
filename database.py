@@ -154,6 +154,194 @@ def init_db() -> None:
         )
     """)
 
+    # -----------------------------------------------------------------------
+    # Budget / finance tracker tables
+    # -----------------------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS budget_income_items (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            month     TEXT    NOT NULL,          -- 'YYYY-MM'
+            category  TEXT    NOT NULL,          -- 'fixed' | 'variable'
+            name      TEXT    NOT NULL,
+            amount    REAL    NOT NULL DEFAULT 0,
+            UNIQUE(month, category, name)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS budget_expense_items (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            month     TEXT    NOT NULL,
+            category  TEXT    NOT NULL,          -- 'fixed' | 'savings' | 'variable_budget'
+            name      TEXT    NOT NULL,
+            amount    REAL    NOT NULL DEFAULT 0,
+            UNIQUE(month, category, name)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS budget_transactions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            month       TEXT    NOT NULL,
+            date        TEXT,
+            description TEXT    NOT NULL,
+            category    TEXT    NOT NULL,
+            amount      REAL    NOT NULL
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Budget / finance tracker
+# ---------------------------------------------------------------------------
+
+def load_budget_income(month: str) -> list[dict]:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM budget_income_items WHERE month = ? ORDER BY category, id",
+        (month,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_budget_income(month: str, category: str, name: str, amount: float) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO budget_income_items (month, category, name, amount)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(month, category, name) DO UPDATE SET amount = excluded.amount
+    """, (month, category, name, amount))
+    conn.commit()
+    conn.close()
+
+
+def delete_budget_income(month: str, category: str, name: str) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM budget_income_items WHERE month = ? AND category = ? AND name = ?",
+        (month, category, name),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_budget_expenses(month: str) -> list[dict]:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM budget_expense_items WHERE month = ? ORDER BY category, id",
+        (month,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_budget_expense(month: str, category: str, name: str, amount: float) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO budget_expense_items (month, category, name, amount)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(month, category, name) DO UPDATE SET amount = excluded.amount
+    """, (month, category, name, amount))
+    conn.commit()
+    conn.close()
+
+
+def delete_budget_expense(month: str, category: str, name: str) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM budget_expense_items WHERE month = ? AND category = ? AND name = ?",
+        (month, category, name),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_budget_transactions(month: str) -> list[dict]:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM budget_transactions WHERE month = ? ORDER BY date, id",
+        (month,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_budget_transaction(month: str, date: str | None, description: str, category: str, amount: float) -> int:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO budget_transactions (month, date, description, category, amount)
+        VALUES (?, ?, ?, ?, ?)
+    """, (month, date, description, category, amount))
+    new_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def delete_budget_transaction(row_id: int) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM budget_transactions WHERE id = ?", (row_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_budget_months() -> list[str]:
+    """Return all months that have any budget data, sorted descending."""
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT month FROM (
+            SELECT month FROM budget_income_items
+            UNION SELECT month FROM budget_expense_items
+            UNION SELECT month FROM budget_transactions
+        ) ORDER BY month DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [r["month"] for r in rows]
+
+
+def copy_budget_structure(from_month: str, to_month: str) -> None:
+    """Copy income & expense line items (not transactions) from one month to another."""
+    conn = _get_connection()
+    cursor = conn.cursor()
+    # income
+    cursor.execute(
+        "SELECT category, name, amount FROM budget_income_items WHERE month = ?",
+        (from_month,),
+    )
+    for row in cursor.fetchall():
+        cursor.execute("""
+            INSERT OR IGNORE INTO budget_income_items (month, category, name, amount)
+            VALUES (?, ?, ?, ?)
+        """, (to_month, row["category"], row["name"], row["amount"]))
+    # expenses
+    cursor.execute(
+        "SELECT category, name, amount FROM budget_expense_items WHERE month = ?",
+        (from_month,),
+    )
+    for row in cursor.fetchall():
+        cursor.execute("""
+            INSERT OR IGNORE INTO budget_expense_items (month, category, name, amount)
+            VALUES (?, ?, ?, ?)
+        """, (to_month, row["category"], row["name"], row["amount"]))
     conn.commit()
     conn.close()
 

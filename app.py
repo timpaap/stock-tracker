@@ -30,6 +30,7 @@ Layout:
 """
 
 import os
+from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 
@@ -42,6 +43,7 @@ import dividend_parser
 import portfolio
 import charts
 import etf_holdings
+import finance_tracker
 
 
 # ---------------------------------------------------------------------------
@@ -50,149 +52,502 @@ import etf_holdings
 st.set_page_config(
     page_title="Portfolio Tracker",
     page_icon="📈",
-    layout="wide",           # use the full width of the browser window
+    layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
 # ---------------------------------------------------------------------------
-# Custom CSS — small style tweaks to make the metric cards look nicer
+# Custom CSS
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* Make metric values a bit larger */
     [data-testid="stMetricValue"] { font-size: 1.6rem; }
-    /* Subtle card background for metric containers */
     [data-testid="stMetric"] {
         background: #f8f9fa;
         border-radius: 10px;
         padding: 14px 18px;
     }
-    /* Remove top padding from the main block */
     .block-container { padding-top: 1.5rem; }
+    /* Nav buttons */
+    div[data-testid="stSidebarContent"] div.nav-btn button {
+        width: 100%;
+        border-radius: 8px;
+        margin-bottom: 4px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Initialise database (creates tables if they don't exist yet)
+# Initialise database
 # ---------------------------------------------------------------------------
 database.init_db()
 
 
 # ---------------------------------------------------------------------------
-# Sidebar
+# Top-level navigation (sidebar)
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.title("📈 Portfolio Tracker")
+    st.title("📈 Mijn Financiën")
     st.markdown("---")
 
-    # --- File upload ---
-    st.subheader("Upload Transactions")
-    st.caption("Export your transactions from DeGiro as an Excel (.xlsx) file and upload it here.")
-    uploaded_files = st.file_uploader(
-        label="Choose .xlsx file(s)",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        help="You can upload multiple monthly files at once.",
+    _section = st.radio(
+        "Navigatie",
+        options=["💶 Budget", "📊 Portfolio"],
+        label_visibility="collapsed",
+        key="main_nav",
     )
-
-    if uploaded_files:
-        for uploaded_file in uploaded_files:
-            # Save the file to the uploads/ folder so it's kept on disk
-            save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", uploaded_file.name)
-            with open(save_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-
-            # Parse and save to database
-            try:
-                txs = transaction_parser.parse_transactions(save_path)
-                saved, skipped = database.save_transactions(txs)
-                if saved > 0:
-                    st.success(f"✅ {uploaded_file.name}: {saved} new transaction(s) added.")
-                else:
-                    st.info(f"ℹ️ {uploaded_file.name}: already up to date.")
-                if skipped > 0:
-                    st.caption(f"  ({skipped} duplicate(s) skipped)")
-            except Exception as e:
-                st.error(f"❌ Error reading {uploaded_file.name}: {e}")
 
     st.markdown("---")
 
-    # --- Refresh prices button ---
-    st.subheader("Live Prices")
-    st.caption("Fetches the latest market prices from Yahoo Finance.")
+    # ---- Portfolio sidebar ----
+    if _section == "📊 Portfolio":
+        st.subheader("Upload Transactions")
+        st.caption("Export your transactions from DeGiro as an Excel (.xlsx) file and upload it here.")
+        uploaded_files = st.file_uploader(
+            label="Choose .xlsx file(s)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            help="You can upload multiple monthly files at once.",
+        )
 
-    if st.button("🔄 Refresh Prices", use_container_width=True):
-        with st.spinner("Fetching prices — this may take a moment..."):
-            portfolio.refresh_all_prices()
-        st.success("Prices updated!")
-        st.rerun()  # reload the page so updated prices appear immediately
-
-    # Show when prices were last fetched
-    prices = database.load_prices()
-    if prices:
-        timestamps = [p["fetched_at"] for p in prices.values() if p.get("fetched_at")]
-        if timestamps:
-            last = max(timestamps)
-            st.caption(f"Last updated: {last}")
-
-    st.markdown("---")
-
-    # --- Mutations / dividends upload ---
-    st.subheader("Upload Mutations (Dividends)")
-    st.caption(
-        "Export your account mutations from DeGiro "
-        "(*Rekeningmutatieoverzicht*) as Excel and upload here "
-        "to track dividend income."
-    )
-    mutations_files = st.file_uploader(
-        label="Choose mutations .xlsx file(s)",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        key="mutations_uploader",
-    )
-    if mutations_files:
-        for mf in mutations_files:
-            save_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "uploads", mf.name
-            )
-            with open(save_path, "wb") as f:
-                f.write(mf.getbuffer())
-            try:
-                divs = dividend_parser.parse_dividends(save_path)
-                if divs:
-                    saved, skipped = database.save_dividends(divs)
+        if uploaded_files:
+            for uploaded_file in uploaded_files:
+                save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", uploaded_file.name)
+                with open(save_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                try:
+                    txs = transaction_parser.parse_transactions(save_path)
+                    saved, skipped = database.save_transactions(txs)
                     if saved > 0:
-                        st.success(f"✅ {mf.name}: {saved} dividend payment(s) added.")
+                        st.success(f"✅ {uploaded_file.name}: {saved} new transaction(s) added.")
                     else:
-                        st.info(f"ℹ️ {mf.name}: already up to date.")
+                        st.info(f"ℹ️ {uploaded_file.name}: already up to date.")
                     if skipped > 0:
                         st.caption(f"  ({skipped} duplicate(s) skipped)")
+                except Exception as e:
+                    st.error(f"❌ Error reading {uploaded_file.name}: {e}")
+
+        st.markdown("---")
+        st.subheader("Live Prices")
+        st.caption("Fetches the latest market prices from Yahoo Finance.")
+
+        if st.button("🔄 Refresh Prices", use_container_width=True):
+            with st.spinner("Fetching prices — this may take a moment..."):
+                portfolio.refresh_all_prices()
+            st.success("Prices updated!")
+            st.rerun()
+
+        prices = database.load_prices()
+        if prices:
+            timestamps = [p["fetched_at"] for p in prices.values() if p.get("fetched_at")]
+            if timestamps:
+                st.caption(f"Last updated: {max(timestamps)}")
+
+        st.markdown("---")
+        st.subheader("Upload Mutations (Dividends)")
+        st.caption(
+            "Export your account mutations from DeGiro "
+            "(*Rekeningmutatieoverzicht*) as Excel and upload here "
+            "to track dividend income."
+        )
+        mutations_files = st.file_uploader(
+            label="Choose mutations .xlsx file(s)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="mutations_uploader",
+        )
+        if mutations_files:
+            for mf in mutations_files:
+                save_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "uploads", mf.name
+                )
+                with open(save_path, "wb") as f:
+                    f.write(mf.getbuffer())
+                try:
+                    divs = dividend_parser.parse_dividends(save_path)
+                    if divs:
+                        saved, skipped = database.save_dividends(divs)
+                        if saved > 0:
+                            st.success(f"✅ {mf.name}: {saved} dividend payment(s) added.")
+                        else:
+                            st.info(f"ℹ️ {mf.name}: already up to date.")
+                        if skipped > 0:
+                            st.caption(f"  ({skipped} duplicate(s) skipped)")
+                    else:
+                        st.info(f"ℹ️ {mf.name}: no dividend rows found.")
+                except Exception as e:
+                    st.error(f"❌ Error reading {mf.name}: {e}")
+
+        st.markdown("---")
+        st.caption("Data stored locally in `data/portfolio.db`")
+
+    # ---- Budget sidebar ----
+    else:
+        _all_months = database.list_budget_months()
+        _cur_month  = finance_tracker.today_month()
+        _month_options = sorted(set(_all_months + [_cur_month]), reverse=True)
+        _month_labels  = {m: finance_tracker.month_label(m) for m in _month_options}
+
+        st.subheader("📅 Maand")
+        _new_month_raw = st.text_input(
+            "Nieuwe maand aanmaken (YYYY-MM)",
+            placeholder="bijv. 2026-05",
+            key="bgt_new_month",
+        )
+        _copy_from = st.selectbox(
+            "Kopieer structuur van",
+            options=["— leeg —"] + _month_options,
+            key="bgt_copy_from",
+        )
+        if st.button("➕ Maand aanmaken", key="bgt_create_month"):
+            _nm = _new_month_raw.strip()
+            try:
+                datetime.strptime(_nm, "%Y-%m")
+                if _copy_from != "— leeg —":
+                    database.copy_budget_structure(_copy_from, _nm)
                 else:
-                    st.info(f"ℹ️ {mf.name}: no dividend rows found.")
-            except Exception as e:
-                st.error(f"❌ Error reading {mf.name}: {e}")
+                    finance_tracker.seed_month_defaults(database, _nm)
+                st.success(f"Maand {_nm} aangemaakt!")
+                st.rerun()
+            except ValueError:
+                st.error("Gebruik het formaat YYYY-MM (bijv. 2026-04)")
 
-    st.markdown("---")
-    st.caption("Data stored locally in `data/portfolio.db`")
+        st.markdown("---")
+        st.subheader("📥 Excel importeren")
+        _xlsx_upload = st.file_uploader(
+            "Upload Template money.xlsx",
+            type=["xlsx"],
+            key="bgt_xlsx",
+        )
+        _import_month = st.selectbox(
+            "In maand",
+            options=_month_options if _month_options else [_cur_month],
+            format_func=lambda m: _month_labels.get(m, m),
+            key="bgt_import_month",
+        )
+        if _xlsx_upload and st.button("📥 Importeer", key="bgt_do_import"):
+            import tempfile as _tf
+            with _tf.NamedTemporaryFile(delete=False, suffix=".xlsx") as _tmp:
+                _tmp.write(_xlsx_upload.getbuffer())
+                _tmp_path = _tmp.name
+            try:
+                _res = finance_tracker.import_from_excel(_tmp_path, _import_month, database)
+                st.success(
+                    f"Geïmporteerd: {_res['income']} inkomsten, "
+                    f"{_res['expenses']} uitgaven, {_res['transactions']} transacties"
+                )
+                st.rerun()
+            except Exception as _e:
+                st.error(f"Import mislukt: {_e}")
+            finally:
+                os.unlink(_tmp_path)
+
+        st.markdown("---")
+        st.caption("Data stored locally in `data/portfolio.db`")
 
 
 # ---------------------------------------------------------------------------
-# Load data
+# Load portfolio data (always needed for portfolio section)
 # ---------------------------------------------------------------------------
-transactions      = database.load_transactions()
 prices            = database.load_prices()
+transactions      = database.load_transactions()
 dividends         = database.load_dividends()
 dividends_by_isin = database.load_dividends_by_isin()
 positions         = portfolio.calculate_positions(transactions, prices)
 summary           = portfolio.calculate_portfolio_summary(positions, transactions, dividends)
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# BUDGET SECTION
+# ===========================================================================
+if _section == "💶 Budget":
+
+    st.title("💶 Maandbudget")
+
+    # ---- Month selector ----
+    _all_months = database.list_budget_months()
+    _cur_month  = finance_tracker.today_month()
+
+    _month_options = sorted(set(_all_months + [_cur_month]), reverse=True)
+    _month_labels  = {m: finance_tracker.month_label(m) for m in _month_options}
+
+    _sel_month = st.selectbox(
+        "Maand",
+        options=_month_options,
+        format_func=lambda m: _month_labels[m],
+        key="budget_month",
+    )
+
+    # Sidebar: new month + Excel import
+    # ---- Seed defaults if month has no data ----
+    _inc_items  = database.load_budget_income(_sel_month)
+    _exp_items  = database.load_budget_expenses(_sel_month)
+    _txns       = database.load_budget_transactions(_sel_month)
+
+    if not _inc_items and not _exp_items:
+        finance_tracker.seed_month_defaults(database, _sel_month)
+        _inc_items  = database.load_budget_income(_sel_month)
+        _exp_items  = database.load_budget_expenses(_sel_month)
+
+    _summary = finance_tracker.calculate_summary(_inc_items, _exp_items, _txns)
+
+    # ---- Summary cards at top ----
+    st.subheader(f"📊 Overzicht — {_month_labels[_sel_month]}")
+    _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+    with _sc1:
+        st.metric("💶 Totale inkomsten", f"€{_summary['total_income']:,.2f}")
+    with _sc2:
+        st.metric("💸 Vaste lasten + sparen", f"€{(_summary['fixed_expenses'] + _summary['savings']):,.2f}")
+    with _sc3:
+        st.metric("🛒 Variabel (werkelijk)", f"€{_summary['total_actual_variable']:,.2f}",
+                  delta=f"budget: €{_summary['total_var_budget']:,.0f}", delta_color="off")
+    with _sc4:
+        _res = _summary["actual_result"]
+        _sign = "+" if _res >= 0 else ""
+        st.metric("✅ Resultaat", f"{_sign}€{_res:,.2f}",
+                  delta="verwacht: " + (f"+€{_summary['expected_result']:,.0f}" if _summary['expected_result'] >= 0 else f"€{_summary['expected_result']:,.0f}"),
+                  delta_color="off")
+
+    st.markdown("---")
+
+    # ---- Charts ----
+    _ch1, _ch2 = st.columns(2)
+    with _ch1:
+        st.plotly_chart(
+            finance_tracker.income_vs_expenses_chart(_summary),
+            key="bgt_overview_chart",
+            width="stretch",
+        )
+    with _ch2:
+        st.plotly_chart(
+            finance_tracker.variable_spending_chart(_summary["actual_by_cat"], _summary["var_budgets"]),
+            key="bgt_variable_chart",
+            width="stretch",
+        )
+
+    st.markdown("---")
+
+    # ---- Main editing area (4 columns) ----
+    _col_inc, _col_exp, _col_sav, _col_var = st.columns(4)
+
+    # ==================== INKOMSTEN ====================
+    with _col_inc:
+        st.subheader("💰 Inkomsten")
+
+        _fixed_inc = [r for r in _inc_items if r["category"] == "fixed"]
+        _var_inc   = [r for r in _inc_items if r["category"] == "variable"]
+
+        st.caption("**Vast**")
+        for _row in _fixed_inc:
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                st.write(_row["name"])
+            with _c2:
+                _new_val = st.number_input(
+                    f"€", value=float(_row["amount"]), step=1.0,
+                    key=f"inc_f_{_row['id']}", label_visibility="collapsed",
+                )
+                if _new_val != _row["amount"]:
+                    database.save_budget_income(_sel_month, "fixed", _row["name"], _new_val)
+                    st.rerun()
+
+        # Add fixed income row
+        with st.expander("＋ Vast inkomen toevoegen"):
+            _ni_name = st.text_input("Naam", key="ni_fname")
+            _ni_val  = st.number_input("Bedrag (€)", min_value=0.0, step=1.0, key="ni_fval")
+            if st.button("Toevoegen", key="ni_fadd") and _ni_name.strip():
+                database.save_budget_income(_sel_month, "fixed", _ni_name.strip(), _ni_val)
+                st.rerun()
+
+        st.divider()
+        st.caption(f"**Vast totaal: €{sum(r['amount'] for r in _fixed_inc):,.2f}**")
+
+        st.caption("**Variabel**")
+        for _row in _var_inc:
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                st.write(_row["name"])
+            with _c2:
+                _new_val = st.number_input(
+                    f"€", value=float(_row["amount"]), step=1.0,
+                    key=f"inc_v_{_row['id']}", label_visibility="collapsed",
+                )
+                if _new_val != _row["amount"]:
+                    database.save_budget_income(_sel_month, "variable", _row["name"], _new_val)
+                    st.rerun()
+
+        with st.expander("＋ Variabel inkomen toevoegen"):
+            _ni_name2 = st.text_input("Naam", key="ni_vname")
+            _ni_val2  = st.number_input("Bedrag (€)", step=1.0, key="ni_vval")
+            if st.button("Toevoegen", key="ni_vadd") and _ni_name2.strip():
+                database.save_budget_income(_sel_month, "variable", _ni_name2.strip(), _ni_val2)
+                st.rerun()
+
+        st.divider()
+        st.caption(f"**Totale inkomsten: €{_summary['total_income']:,.2f}**")
+
+    # ==================== VASTE UITGAVEN ====================
+    with _col_exp:
+        st.subheader("🏠 Vaste uitgaven")
+
+        _fixed_exp = [r for r in _exp_items if r["category"] == "fixed"]
+        for _row in _fixed_exp:
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                st.write(_row["name"])
+            with _c2:
+                _new_val = st.number_input(
+                    "€", value=float(_row["amount"]), min_value=0.0, step=0.01,
+                    key=f"exp_f_{_row['id']}", label_visibility="collapsed",
+                )
+                if _new_val != _row["amount"]:
+                    database.save_budget_expense(_sel_month, "fixed", _row["name"], _new_val)
+                    st.rerun()
+
+        with st.expander("＋ Vaste uitgave toevoegen"):
+            _ne_name = st.text_input("Naam", key="ne_fname")
+            _ne_val  = st.number_input("Bedrag (€)", min_value=0.0, step=0.01, key="ne_fval")
+            if st.button("Toevoegen", key="ne_fadd") and _ne_name.strip():
+                database.save_budget_expense(_sel_month, "fixed", _ne_name.strip(), _ne_val)
+                st.rerun()
+
+        st.divider()
+        st.caption(f"**Totaal vaste lasten: €{_summary['fixed_expenses']:,.2f}**")
+
+    # ==================== SPAREN ====================
+    with _col_sav:
+        st.subheader("🏦 Sparen")
+
+        _sav_items = [r for r in _exp_items if r["category"] == "savings"]
+        for _row in _sav_items:
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                st.write(_row["name"])
+            with _c2:
+                _new_val = st.number_input(
+                    "€", value=float(_row["amount"]), min_value=0.0, step=1.0,
+                    key=f"sav_{_row['id']}", label_visibility="collapsed",
+                )
+                if _new_val != _row["amount"]:
+                    database.save_budget_expense(_sel_month, "savings", _row["name"], _new_val)
+                    st.rerun()
+
+        with st.expander("＋ Spaardoel toevoegen"):
+            _ns_name = st.text_input("Naam", key="ns_name")
+            _ns_val  = st.number_input("Bedrag (€)", min_value=0.0, step=1.0, key="ns_val")
+            if st.button("Toevoegen", key="ns_add") and _ns_name.strip():
+                database.save_budget_expense(_sel_month, "savings", _ns_name.strip(), _ns_val)
+                st.rerun()
+
+        st.divider()
+        st.caption(f"**Totaal sparen: €{_summary['savings']:,.2f}**")
+
+    # ==================== VARIABELE BUDGETTEN ====================
+    with _col_var:
+        st.subheader("🎯 Variabele budgets")
+
+        _vb_items = [r for r in _exp_items if r["category"] == "variable_budget"]
+        for _row in _vb_items:
+            _c1, _c2 = st.columns([3, 2])
+            _actual_spent = _summary["actual_by_cat"].get(_row["name"], 0.0)
+            _budget       = _row["amount"]
+            _over = _actual_spent > _budget > 0
+            with _c1:
+                _icon = "🔴 " if _over else ""
+                st.write(f"{_icon}{_row['name']}")
+                st.caption(f"werkelijk: €{_actual_spent:,.2f}")
+            with _c2:
+                _new_val = st.number_input(
+                    "Budget €", value=float(_budget), min_value=0.0, step=5.0,
+                    key=f"vb_{_row['id']}", label_visibility="collapsed",
+                )
+                if _new_val != _budget:
+                    database.save_budget_expense(_sel_month, "variable_budget", _row["name"], _new_val)
+                    st.rerun()
+
+        with st.expander("＋ Categorie toevoegen"):
+            _nb_name = st.text_input("Naam", key="nb_name")
+            _nb_val  = st.number_input("Budget (€)", min_value=0.0, step=5.0, key="nb_val")
+            if st.button("Toevoegen", key="nb_add") and _nb_name.strip():
+                database.save_budget_expense(_sel_month, "variable_budget", _nb_name.strip(), _nb_val)
+                st.rerun()
+
+        st.divider()
+        st.caption(f"**Budget: €{_summary['total_var_budget']:,.2f}  ·  Werkelijk: €{_summary['total_actual_variable']:,.2f}**")
+
+    st.markdown("---")
+
+    # ==================== VARIABELE TRANSACTIES ====================
+    st.subheader("🧾 Variabele uitgaven — transacties")
+
+    # Add transaction form
+    _vcat_options = [r["name"] for r in _exp_items if r["category"] == "variable_budget"] or finance_tracker.VARIABLE_CATEGORIES
+    with st.expander("➕ Transactie toevoegen", expanded=not bool(_txns)):
+        _tf1, _tf2, _tf3, _tf4 = st.columns([2, 3, 2, 1])
+        with _tf1:
+            _t_date = st.date_input("Datum", value=date.today(), key="txn_date")
+        with _tf2:
+            _t_desc = st.text_input("Omschrijving", key="txn_desc")
+        with _tf3:
+            _t_cat = st.selectbox("Categorie", options=_vcat_options, key="txn_cat")
+        with _tf4:
+            _t_amt = st.number_input("Bedrag €", min_value=0.0, step=0.01, key="txn_amt")
+        if st.button("💾 Toevoegen", key="txn_add") and _t_desc.strip() and _t_amt > 0:
+            database.save_budget_transaction(
+                _sel_month, str(_t_date), _t_desc.strip(), _t_cat, _t_amt
+            )
+            st.rerun()
+
+    if _txns:
+        _txn_df = pd.DataFrame(_txns)
+        _txn_display = _txn_df[["id", "date", "description", "category", "amount"]].copy()
+        _txn_display.columns = ["ID", "Datum", "Omschrijving", "Categorie", "Bedrag (€)"]
+        _txn_display = _txn_display.sort_values("Datum", ascending=False)
+
+        # Show table + delete button per row
+        _del_col, _tbl_col = st.columns([1, 6])
+        with _tbl_col:
+            st.dataframe(
+                _txn_display.style.format({"Bedrag (€)": "€{:,.2f}"}),
+                width="stretch",
+                hide_index=True,
+            )
+        with _del_col:
+            st.caption("🗑 Verwijder")
+            for _, _tr in _txn_display.iterrows():
+                if st.button("✕", key=f"del_txn_{_tr['ID']}"):
+                    database.delete_budget_transaction(int(_tr["ID"]))
+                    st.rerun()
+    else:
+        st.info("Nog geen transacties. Voeg ze hierboven toe.")
+
+    st.markdown("---")
+
+    # ==================== BOTTOM SUMMARY ====================
+    st.subheader("📋 Totaaloverzicht")
+    _bs1, _bs2, _bs3 = st.columns(3)
+    with _bs1:
+        st.metric("Totale inkomsten",    f"€{_summary['total_income']:,.2f}")
+        st.metric("Besteedbaar inkomen", f"€{_summary['disposable_income']:,.2f}",
+                  help="Inkomsten minus spaardoelen")
+    with _bs2:
+        st.metric("Verwachte uitgaven",  f"€{_summary['expected_expenses']:,.2f}")
+        st.metric("Werkelijke uitgaven", f"€{_summary['total_actual_expenses']:,.2f}")
+    with _bs3:
+        _er = _summary["expected_result"]
+        _ar = _summary["actual_result"]
+        st.metric("Verwacht resultaat",  f"{'+'if _er>=0 else ''}€{_er:,.2f}")
+        st.metric("Werkelijk resultaat", f"{'+'if _ar>=0 else ''}€{_ar:,.2f}",
+                  delta=f"{'+'if (_ar-_er)>=0 else ''}€{(_ar-_er):,.2f} vs verwacht",
+                  delta_color="normal")
+
+    st.stop()
+
 # Main dashboard
 # ---------------------------------------------------------------------------
-st.title("My Portfolio Dashboard")
+st.title("📊 My Portfolio Dashboard")
 
 if not transactions:
     # First-time user — show a helpful getting-started message
