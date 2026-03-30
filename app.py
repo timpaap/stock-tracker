@@ -203,7 +203,7 @@ if not transactions:
     st.stop()
 
 
-tab1, tab2 = st.tabs(["📊 Portfolio", "🔬 ETF Analysis  ·  Estimates"])
+tab1, tab2, tab3 = st.tabs(["📊 Portfolio", "🔬 ETF Analysis  ·  Estimates", "⚖️ Rebalancing"])
 
 # ===========================================================================
 # TAB 1 — Exact data (based on your real transactions and live prices)
@@ -347,6 +347,13 @@ with tab1:
 
     # --- Dividends table ---
     st.subheader("💰 Dividend Income")
+
+    if dividends:
+        st.plotly_chart(
+            charts.dividend_over_time_chart(dividends),
+            key="chart_dividends",
+            width="stretch",
+        )
 
     if dividends:
         import pandas as _pd
@@ -530,3 +537,482 @@ with tab2:
         exp_df["Effective Value (€)"] = exp_df["Effective Value (€)"].map(lambda x: f"€{x:,.2f}")
         exp_df["Via ETF(s)"] = exp_df["Via ETF(s)"].map(lambda x: ", ".join(x))
         st.dataframe(exp_df, width="stretch", hide_index=True)
+
+
+# ===========================================================================
+# TAB 3 — Rebalancing
+# ===========================================================================
+with tab3:
+    import json as _json
+
+    CATEGORIES = ["Broad ETF", "Individual / Sector ETF", "Bond"]
+    ALL_CATEGORIES = CATEGORIES + ["Unclassified"]
+
+    # ------------------------------------------------------------------
+    # Target allocation
+    # ------------------------------------------------------------------
+    st.subheader("🎯 Target Allocation")
+    st.caption(
+        "Set how much of your portfolio should be in each bucket. "
+        "Bonds are auto-calculated so the total always equals 100%."
+    )
+
+    _saved_json = database.load_setting("rebalancing_targets", None)
+    _defaults = (
+        _json.loads(_saved_json)
+        if _saved_json
+        else {"Broad ETF": 80, "Individual / Sector ETF": 20, "Bond": 0}
+    )
+
+    tgt_col1, tgt_col2, tgt_col3 = st.columns(3)
+    with tgt_col1:
+        broad_target = st.slider(
+            "Broad ETFs (%)",
+            min_value=0, max_value=100,
+            value=int(_defaults.get("Broad ETF", 80)),
+            key="rb_broad",
+        )
+    with tgt_col2:
+        ind_target = st.slider(
+            "Individual / Sector ETFs (%)",
+            min_value=0, max_value=100,
+            value=int(_defaults.get("Individual / Sector ETF", 20)),
+            key="rb_ind",
+        )
+    with tgt_col3:
+        bond_target = st.slider(
+            "Bonds (%)",
+            min_value=0, max_value=100,
+            value=int(_defaults.get("Bond", 0)),
+            key="rb_bond",
+        )
+
+    targets = {"Broad ETF": broad_target, "Individual / Sector ETF": ind_target, "Bond": bond_target}
+    _total_targets = broad_target + ind_target + bond_target
+
+    if _total_targets != 100:
+        st.warning(
+            f"⚠️ Broad ETFs ({broad_target}%) + Individual/Sector ETFs ({ind_target}%) + Bonds ({bond_target}%) "
+            f"= **{_total_targets}%** — adjust the sliders so the total equals exactly 100%."
+        )
+
+    if st.button("💾 Save Targets", key="rb_save_targets", disabled=(_total_targets != 100)):
+        database.save_setting("rebalancing_targets", _json.dumps(targets))
+        st.success("Targets saved!")
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------------
+    # Category assignment per position
+    # ------------------------------------------------------------------
+    st.subheader("🏷️ Classify Your Holdings")
+    st.caption(
+        "Assign each position to a category. We auto-guess based on the name — "
+        "correct any mistakes and click **Save Categories**."
+    )
+
+    _saved_cats = database.load_asset_categories()
+
+    def _auto_guess(name: str) -> str:
+        n = name.lower()
+        if any(kw in n for kw in [
+            "world", "s&p", "europe", "msci", "stoxx", "emerging", "em ", "ftse",
+            "all cap", "vanguard", "ishares core", "global", "developed",
+        ]):
+            return "Broad ETF"
+        if any(kw in n for kw in [
+            "bond", "obligat", "government", "treasury", "gilt", "aggregate", "corporate",
+        ]):
+            return "Bond"
+        return "Unclassified"
+
+    _cat_rows = []
+    for _pos in positions:
+        _isin = _pos["isin"]
+        _cat = _saved_cats.get(_isin) or _auto_guess(_pos["name"])
+        _cat_rows.append({
+            "ISIN":      _isin,
+            "Product":   _pos["name"],
+            "Value (€)": _pos.get("current_value") or 0.0,
+            "Category":  _cat,
+        })
+
+    _cat_df = pd.DataFrame(_cat_rows)
+
+    edited_cats = st.data_editor(
+        _cat_df,
+        column_config={
+            "ISIN":      st.column_config.TextColumn("ISIN", disabled=True),
+            "Product":   st.column_config.TextColumn("Product", disabled=True),
+            "Value (€)": st.column_config.NumberColumn("Value (€)", format="€%.2f", disabled=True),
+            "Category":  st.column_config.SelectboxColumn(
+                "Category",
+                options=ALL_CATEGORIES,
+                required=True,
+            ),
+        },
+        hide_index=True,
+        key="cat_editor",
+        width="stretch",
+    )
+
+    if st.button("💾 Save Categories", key="rb_save_cats"):
+        for _, _row in edited_cats.iterrows():
+            database.save_asset_category(_row["ISIN"], _row["Category"])
+        st.success("Categories saved!")
+        st.rerun()
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------------
+    # Current vs Target analysis
+    # ------------------------------------------------------------------
+    st.subheader("📊 Current vs Target Allocation")
+
+    # Build allocation from the (possibly-edited, not-yet-saved) table
+    _live_cats = {_row["ISIN"]: _row["Category"] for _, _row in edited_cats.iterrows()}
+    _total_value = sum(_pos.get("current_value") or 0.0 for _pos in positions)
+
+    _by_cat: dict[str, float] = {cat: 0.0 for cat in ALL_CATEGORIES}
+    for _pos in positions:
+        _cat = _live_cats.get(_pos["isin"], "Unclassified")
+        _by_cat[_cat] = _by_cat.get(_cat, 0.0) + (_pos.get("current_value") or 0.0)
+
+    _unclassified_val = _by_cat.get("Unclassified", 0.0)
+    if _unclassified_val > 0 and _total_value > 0:
+        _n_unclassified = sum(
+            1 for _pos in positions
+            if _live_cats.get(_pos["isin"], "Unclassified") == "Unclassified"
+        )
+        st.warning(
+            f"⚠️ {_unclassified_val / _total_value * 100:.1f}% of your portfolio "
+            f"({_n_unclassified} position(s)) is still **Unclassified**. "
+            "Set categories above for accurate rebalancing figures."
+        )
+
+    if _total_value == 0:
+        st.info("No price data available yet — refresh prices in the sidebar first.")
+    else:
+        _current_pcts = {
+            cat: (_by_cat.get(cat, 0.0) / _total_value * 100)
+            for cat in CATEGORIES
+        }
+
+        st.plotly_chart(
+            charts.rebalancing_chart(
+                _current_pcts,
+                {cat: float(targets[cat]) for cat in CATEGORIES},
+                current_values={cat: _by_cat.get(cat, 0.0) for cat in CATEGORIES},
+                total_value=_total_value,
+            ),
+            key="chart_rebalancing",
+            width="stretch",
+        )
+
+        # Status indicator cards
+        _status_cols = st.columns(len(CATEGORIES))
+        for _i, _cat in enumerate(CATEGORIES):
+            _curr = _current_pcts[_cat]
+            _tgt  = float(targets[_cat])
+            _dev  = _curr - _tgt
+            _abs  = abs(_dev)
+            _icon = "🟢" if _abs <= 5 else ("🟡" if _abs <= 15 else "🔴")
+            _sign = "+" if _dev >= 0 else ""
+            with _status_cols[_i]:
+                st.metric(
+                    label=f"{_icon} {_cat}",
+                    value=f"{_curr:.1f}%",
+                    delta=f"{_sign}{_dev:.1f} pp vs {_tgt:.0f}% target",
+                    delta_color="inverse",
+                    help=(
+                        "🟢 within ±5 pp of target  "
+                        "🟡 within ±15 pp of target  "
+                        "🔴 more than 15 pp off target"
+                    ),
+                )
+
+        st.markdown("---")
+
+        # ------------------------------------------------------------------
+        # Investment recommendation
+        # ------------------------------------------------------------------
+        st.subheader("💡 Next Investment")
+        st.caption(
+            "Enter how much you're planning to invest. "
+            "We'll split it across categories to move your portfolio closest to your targets."
+        )
+
+        _invest = st.number_input(
+            "Amount to invest (€)",
+            min_value=0.0,
+            value=1000.0,
+            step=100.0,
+            key="rb_invest",
+        )
+
+        if _invest > 0:
+            _new_total = _total_value + _invest
+
+            # For each category: how much would be needed to reach the target after investment?
+            _gaps: dict[str, float] = {}
+            for _cat in CATEGORIES:
+                _target_val = _new_total * (targets[_cat] / 100.0)
+                _current_val = _by_cat.get(_cat, 0.0)
+                _gaps[_cat] = max(0.0, _target_val - _current_val)
+
+            _total_gap = sum(_gaps.values())
+
+            st.write(f"**Recommended split of €{_invest:,.2f}:**")
+            _rec_cols = st.columns(len(CATEGORIES))
+            _recommendations: dict[str, float] = {}
+
+            for _i, _cat in enumerate(CATEGORIES):
+                _rec = (_invest * _gaps[_cat] / _total_gap) if _total_gap > 0 else 0.0
+                _recommendations[_cat] = _rec
+                _pct_of_inv = (_rec / _invest * 100) if _invest > 0 else 0.0
+                with _rec_cols[_i]:
+                    st.metric(
+                        label=_cat,
+                        value=f"€{_rec:,.2f}",
+                        delta=f"{_pct_of_inv:.0f}% of investment",
+                    )
+
+            # Show the resulting allocation after the investment
+            _after_pcts: dict[str, float] = {}
+            for _cat in CATEGORIES:
+                _after_val = _by_cat.get(_cat, 0.0) + _recommendations[_cat]
+                _after_pcts[_cat] = _after_val / _new_total * 100
+
+            st.caption(f"Your allocation after investing €{_invest:,.2f}:")
+            st.plotly_chart(
+                charts.rebalancing_chart(
+                    _after_pcts,
+                    {cat: float(targets[cat]) for cat in CATEGORIES},
+                    title="Allocation After This Investment",
+                    current_values={cat: _by_cat.get(cat, 0.0) + _recommendations[cat] for cat in CATEGORIES},
+                    total_value=_new_total,
+                ),
+                key="chart_after_rebalancing",
+                width="stretch",
+            )
+
+    st.markdown("---")
+
+    # ==================================================================
+    # BROAD ETF ZOOM — US / Europe / EM
+    # ==================================================================
+    st.subheader("🔍 Broad ETF Deep-dive: US · Europe · EM")
+    st.caption(
+        "Zoom into your Broad ETF bucket and rebalance between US (S&P 500), "
+        "Europe, and Emerging Markets."
+    )
+
+    BROAD_REGIONS    = ["US", "Europe", "EM"]
+    ALL_BROAD_REGIONS = BROAD_REGIONS + ["Mixed / Global", "Unclassified"]
+
+    # --- Region targets ---
+    _saved_br_json = database.load_setting("broad_region_targets", None)
+    _br_defaults = (
+        _json.loads(_saved_br_json)
+        if _saved_br_json
+        else {"US": 80, "Europe": 15, "EM": 5}
+    )
+
+    br_col1, br_col2, br_col3 = st.columns(3)
+    with br_col1:
+        br_us = st.slider("US (%)", 0, 100, int(_br_defaults.get("US", 80)), key="br_us")
+    with br_col2:
+        br_eu = st.slider("Europe (%)", 0, 100, int(_br_defaults.get("Europe", 15)), key="br_eu")
+    with br_col3:
+        br_em = st.slider("EM (%)", 0, 100, int(_br_defaults.get("EM", 5)), key="br_em")
+
+    br_targets = {"US": br_us, "Europe": br_eu, "EM": br_em}
+    _br_sum = br_us + br_eu + br_em
+
+    if _br_sum != 100:
+        st.warning(
+            f"⚠️ US ({br_us}%) + Europe ({br_eu}%) + EM ({br_em}%) = **{_br_sum}%** — "
+            "adjust sliders so the total equals 100%."
+        )
+
+    if st.button("💾 Save Region Targets", key="br_save_targets", disabled=(_br_sum != 100)):
+        database.save_setting("broad_region_targets", _json.dumps(br_targets))
+        st.success("Region targets saved!")
+
+    st.markdown("")
+
+    # --- Classify broad ETFs by region ---
+    _saved_regions = database.load_broad_regions()
+
+    def _auto_guess_region(name: str) -> str:
+        n = name.lower()
+        if any(kw in n for kw in ["s&p", "500", "nasdaq", "us ", "usa", "united states", "north america"]):
+            return "US"
+        if any(kw in n for kw in ["europe", "stoxx", "euro", "europ"]):
+            return "Europe"
+        if any(kw in n for kw in ["emerging", " em ", "em bond", "brics", "asia", "pacific"]):
+            return "EM"
+        if any(kw in n for kw in ["world", "global", "msci acwi", "all country", "ftse all"]):
+            return "Mixed / Global"
+        return "Unclassified"
+
+    # Only show positions classified as Broad ETF
+    _br_positions = [
+        _pos for _pos in positions
+        if _live_cats.get(_pos["isin"], _auto_guess(_pos["name"])) == "Broad ETF"
+    ]
+
+    if not _br_positions:
+        st.info(
+            "No positions are classified as **Broad ETF** yet. "
+            "Classify your holdings in the section above first."
+        )
+    else:
+        _br_rows = []
+        for _pos in _br_positions:
+            _isin = _pos["isin"]
+            _reg = _saved_regions.get(_isin) or _auto_guess_region(_pos["name"])
+            _br_rows.append({
+                "ISIN":      _isin,
+                "Product":   _pos["name"],
+                "Value (€)": _pos.get("current_value") or 0.0,
+                "Region":    _reg,
+            })
+
+        _br_df = pd.DataFrame(_br_rows)
+
+        edited_regions = st.data_editor(
+            _br_df,
+            column_config={
+                "ISIN":      st.column_config.TextColumn("ISIN", disabled=True),
+                "Product":   st.column_config.TextColumn("Product", disabled=True),
+                "Value (€)": st.column_config.NumberColumn("Value (€)", format="€%.2f", disabled=True),
+                "Region":    st.column_config.SelectboxColumn(
+                    "Region",
+                    options=ALL_BROAD_REGIONS,
+                    required=True,
+                ),
+            },
+            hide_index=True,
+            key="br_editor",
+            width="stretch",
+        )
+
+        if st.button("💾 Save Regions", key="br_save_regions"):
+            for _, _row in edited_regions.iterrows():
+                database.save_broad_region(_row["ISIN"], _row["Region"])
+            st.success("Regions saved!")
+            st.rerun()
+
+        st.markdown("")
+
+        # --- Current vs target within Broad ETF bucket ---
+        _live_regions = {_row["ISIN"]: _row["Region"] for _, _row in edited_regions.iterrows()}
+        _br_total = sum(_pos.get("current_value") or 0.0 for _pos in _br_positions)
+
+        _by_region: dict[str, float] = {r: 0.0 for r in ALL_BROAD_REGIONS}
+        for _pos in _br_positions:
+            _reg = _live_regions.get(_pos["isin"], "Unclassified")
+            _by_region[_reg] = _by_region.get(_reg, 0.0) + (_pos.get("current_value") or 0.0)
+
+        _mixed_val = _by_region.get("Mixed / Global", 0.0)
+        _unc_val   = _by_region.get("Unclassified", 0.0)
+        if (_mixed_val + _unc_val) > 0 and _br_total > 0:
+            st.warning(
+                f"⚠️ {(_mixed_val + _unc_val) / _br_total * 100:.1f}% of your Broad ETF bucket "
+                "is labelled **Mixed/Global** or **Unclassified** — assign a region for more accurate figures."
+            )
+
+        if _br_total == 0:
+            st.info("No price data for Broad ETFs yet — refresh prices first.")
+        elif _br_sum != 100:
+            st.info("Set region targets that sum to 100% above to see the analysis.")
+        else:
+            _br_current_pcts = {
+                reg: (_by_region.get(reg, 0.0) / _br_total * 100)
+                for reg in BROAD_REGIONS
+            }
+
+            st.plotly_chart(
+                charts.rebalancing_chart(
+                    _br_current_pcts,
+                    {reg: float(br_targets[reg]) for reg in BROAD_REGIONS},
+                    title="Broad ETF: Current vs Target (US / Europe / EM)",
+                    current_values={reg: _by_region.get(reg, 0.0) for reg in BROAD_REGIONS},
+                    total_value=_br_total,
+                ),
+                key="chart_broad_region",
+                width="stretch",
+            )
+
+            _br_status_cols = st.columns(len(BROAD_REGIONS))
+            for _i, _reg in enumerate(BROAD_REGIONS):
+                _curr = _br_current_pcts[_reg]
+                _tgt  = float(br_targets[_reg])
+                _dev  = _curr - _tgt
+                _icon = "🟢" if abs(_dev) <= 5 else ("🟡" if abs(_dev) <= 15 else "🔴")
+                _sign = "+" if _dev >= 0 else ""
+                with _br_status_cols[_i]:
+                    st.metric(
+                        label=f"{_icon} {_reg}",
+                        value=f"{_curr:.1f}%",
+                        delta=f"{_sign}{_dev:.1f} pp vs {_tgt:.0f}% target",
+                        delta_color="inverse",
+                    )
+
+            st.markdown("---")
+
+            # --- Next investment within Broad ETF bucket ---
+            st.write("**💡 Next Broad ETF Investment**")
+            st.caption(
+                "Enter how much you plan to put into Broad ETFs. "
+                "We'll split it to best close the gap across US, Europe, and EM."
+            )
+
+            _br_invest = st.number_input(
+                "Amount to invest in Broad ETFs (€)",
+                min_value=0.0,
+                value=500.0,
+                step=100.0,
+                key="br_invest",
+            )
+
+            if _br_invest > 0:
+                _br_new_total = _br_total + _br_invest
+                _br_gaps: dict[str, float] = {}
+                for _reg in BROAD_REGIONS:
+                    _br_gaps[_reg] = max(
+                        0.0,
+                        _br_new_total * (br_targets[_reg] / 100.0) - _by_region.get(_reg, 0.0),
+                    )
+                _br_total_gap = sum(_br_gaps.values())
+
+                st.write(f"**Recommended split of €{_br_invest:,.2f} within Broad ETFs:**")
+                _br_rec_cols = st.columns(len(BROAD_REGIONS))
+                _br_recs: dict[str, float] = {}
+                for _i, _reg in enumerate(BROAD_REGIONS):
+                    _rec = (_br_invest * _br_gaps[_reg] / _br_total_gap) if _br_total_gap > 0 else 0.0
+                    _br_recs[_reg] = _rec
+                    with _br_rec_cols[_i]:
+                        st.metric(
+                            label=_reg,
+                            value=f"€{_rec:,.2f}",
+                            delta=f"{(_rec / _br_invest * 100):.0f}% of investment",
+                        )
+
+                _br_after_pcts: dict[str, float] = {
+                    _reg: (_by_region.get(_reg, 0.0) + _br_recs[_reg]) / _br_new_total * 100
+                    for _reg in BROAD_REGIONS
+                }
+                st.caption(f"Region allocation after investing €{_br_invest:,.2f} in Broad ETFs:")
+                st.plotly_chart(
+                    charts.rebalancing_chart(
+                        _br_after_pcts,
+                        {reg: float(br_targets[reg]) for reg in BROAD_REGIONS},
+                        title="Broad ETF Allocation After This Investment",
+                        current_values={reg: _by_region.get(reg, 0.0) + _br_recs[reg] for reg in BROAD_REGIONS},
+                        total_value=_br_new_total,
+                    ),
+                    key="chart_broad_after",
+                    width="stretch",
+                )

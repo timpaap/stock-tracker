@@ -532,6 +532,83 @@ def stock_exposure_chart(stocks: list[dict], top_n: int = 20) -> go.Figure:
     return fig
 
 
+def dividend_over_time_chart(dividends: list[dict]) -> go.Figure:
+    """
+    Bar chart of net dividend income per month, stacked by stock/ETF,
+    with a cumulative total line on a secondary y-axis.
+    """
+    if not dividends:
+        return _empty_figure("No dividend data yet")
+
+    df = pd.DataFrame(dividends)
+    df["date"] = pd.to_datetime(df["date"])
+    df["month"] = df["date"].dt.to_period("M").dt.to_timestamp()
+
+    # Shorten long names for the legend
+    df["label"] = df["name"].apply(lambda n: _shorten(n, 30))
+
+    pivot = (
+        df.groupby(["month", "label"])["net_eur"]
+        .sum()
+        .reset_index()
+    )
+
+    all_months = sorted(pivot["month"].unique())
+    all_stocks = pivot.groupby("label")["net_eur"].sum().sort_values(ascending=False).index.tolist()
+
+    extended_colours = (
+        COLOURS_PIE * ((len(all_stocks) // len(COLOURS_PIE)) + 1)
+    )
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    cumulative = [0.0] * len(all_months)
+
+    for i, stock in enumerate(all_stocks):
+        stock_data = pivot[pivot["label"] == stock].set_index("month")["net_eur"]
+        y_vals = [float(stock_data.get(m, 0.0)) for m in all_months]
+
+        fig.add_trace(
+            go.Bar(
+                name=stock,
+                x=all_months,
+                y=y_vals,
+                marker_color=extended_colours[i],
+                hovertemplate="%{x|%b %Y}<br>" + stock + ": €%{y:,.2f}<extra></extra>",
+            ),
+            secondary_y=False,
+        )
+
+        cumulative = [c + v for c, v in zip(cumulative, y_vals)]
+
+    fig.add_trace(
+        go.Scatter(
+            name="Cumulative",
+            x=all_months,
+            y=cumulative,
+            mode="lines+markers",
+            line=dict(color="#ffa726", width=2, dash="dot"),
+            marker=dict(size=5),
+            hovertemplate="%{x|%b %Y}<br>Cumulative: €%{y:,.2f}<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+
+    fig.update_layout(
+        title="Dividend Income Over Time",
+        barmode="stack",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        margin=dict(t=80, b=40, l=60, r=60),
+        xaxis=dict(title="Month", tickformat="%b %Y", showgrid=False),
+        yaxis=dict(title="Net dividends (€)", tickprefix="€", showgrid=True, gridcolor="#f0f0f0"),
+        yaxis2=dict(title="Cumulative (€)", tickprefix="€", showgrid=False),
+    )
+
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
@@ -559,3 +636,93 @@ def _empty_figure(message: str) -> go.Figure:
 def _shorten(name: str, max_len: int = 35) -> str:
     """Truncates a long stock name and adds '…' so chart labels stay readable."""
     return name if len(name) <= max_len else name[:max_len].rstrip() + "…"
+
+
+def rebalancing_chart(
+    current_pcts: dict[str, float],
+    target_pcts: dict[str, float],
+    title: str = "Current vs Target Allocation",
+    current_values: dict[str, float] | None = None,
+    total_value: float | None = None,
+) -> go.Figure:
+    """
+    Grouped bar chart comparing current allocation percentages to target percentages.
+    The 'Current' bars are colour-coded by how far they deviate from the target:
+      🟢 green  — within ±5 pp
+      🟡 orange — within ±15 pp
+      🔴 red    — >15 pp off
+    Pass current_values (EUR per category) and total_value to show amounts on hover.
+    """
+    categories = list(target_pcts.keys())
+    t_vals = [target_pcts.get(cat, 0.0) for cat in categories]
+    c_vals = [current_pcts.get(cat, 0.0) for cat in categories]
+
+    bar_colors = []
+    for cv, tv in zip(c_vals, t_vals):
+        dev = abs(cv - tv)
+        if dev <= 5:
+            bar_colors.append("#4CAF50")   # green — on track
+        elif dev <= 15:
+            bar_colors.append("#FF9800")   # orange — drifting
+        else:
+            bar_colors.append("#F44336")   # red — needs attention
+
+    # Build hover text
+    if current_values is not None:
+        c_hover = [
+            f"<b>{cat}</b><br>Current: {pct:.1f}%<br>Value: €{current_values.get(cat, 0.0):,.0f}"
+            for cat, pct in zip(categories, c_vals)
+        ]
+    else:
+        c_hover = [f"<b>{cat}</b><br>Current: {pct:.1f}%" for cat, pct in zip(categories, c_vals)]
+
+    if total_value is not None:
+        t_hover = [
+            f"<b>{cat}</b><br>Target: {pct:.0f}%<br>Value: €{total_value * pct / 100:,.0f}"
+            for cat, pct in zip(categories, t_vals)
+        ]
+    else:
+        t_hover = [f"<b>{cat}</b><br>Target: {pct:.0f}%" for cat, pct in zip(categories, t_vals)]
+
+    fig = go.Figure()
+
+    # Target bars (soft blue outline)
+    fig.add_trace(go.Bar(
+        name="Target",
+        x=categories,
+        y=t_vals,
+        marker_color="rgba(100, 149, 237, 0.25)",
+        marker_line_color="rgba(100, 149, 237, 0.9)",
+        marker_line_width=2,
+        text=[f"{v:.0f}%" for v in t_vals],
+        textposition="outside",
+        textfont=dict(size=13),
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=t_hover,
+    ))
+
+    # Current bars (colour-coded)
+    fig.add_trace(go.Bar(
+        name="Current",
+        x=categories,
+        y=c_vals,
+        marker_color=bar_colors,
+        text=[f"{v:.1f}%" for v in c_vals],
+        textposition="outside",
+        textfont=dict(size=13, color="white"),
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=c_hover,
+    ))
+
+    y_max = max(max(c_vals + t_vals, default=0) + 18, 105)
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=15)),
+        barmode="group",
+        yaxis=dict(title="Allocation (%)", range=[0, y_max], gridcolor="#eee"),
+        xaxis=dict(tickfont=dict(size=13)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(t=80, b=20, l=20, r=20),
+    )
+    return fig

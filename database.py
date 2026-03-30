@@ -133,6 +133,98 @@ def init_db() -> None:
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS asset_categories (
+            isin         TEXT PRIMARY KEY,
+            category     TEXT NOT NULL DEFAULT 'Unclassified',
+            broad_region TEXT NOT NULL DEFAULT 'Unclassified'
+        )
+    """)
+
+    # Migration: add broad_region column if it doesn't exist yet
+    cursor.execute("PRAGMA table_info(asset_categories)")
+    cols = [row["name"] for row in cursor.fetchall()]
+    if "broad_region" not in cols:
+        cursor.execute("ALTER TABLE asset_categories ADD COLUMN broad_region TEXT NOT NULL DEFAULT 'Unclassified'")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Asset categories (rebalancing)
+# ---------------------------------------------------------------------------
+
+def load_asset_categories() -> dict[str, str]:
+    """Returns {isin: category} for all saved categorisations."""
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT isin, category FROM asset_categories")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row["isin"]: row["category"] for row in rows}
+
+
+def load_broad_regions() -> dict[str, str]:
+    """Returns {isin: broad_region} for all Broad ETF positions."""
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT isin, broad_region FROM asset_categories")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row["isin"]: row["broad_region"] for row in rows}
+
+
+def save_asset_category(isin: str, category: str) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO asset_categories (isin, category) VALUES (?, ?)",
+        (isin, category),
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_broad_region(isin: str, region: str) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    # Upsert: preserve existing category if row already exists
+    cursor.execute(
+        """
+        INSERT INTO asset_categories (isin, category, broad_region)
+        VALUES (?, COALESCE((SELECT category FROM asset_categories WHERE isin = ?), 'Unclassified'), ?)
+        ON CONFLICT(isin) DO UPDATE SET broad_region = excluded.broad_region
+        """,
+        (isin, isin, region),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_setting(key: str, default: str | None = None) -> str | None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def save_setting(key: str, value: str) -> None:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        (key, value),
+    )
     conn.commit()
     conn.close()
 
