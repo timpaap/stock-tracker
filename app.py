@@ -88,19 +88,36 @@ database.init_db()
 # ---------------------------------------------------------------------------
 # Top-level navigation (sidebar)
 # ---------------------------------------------------------------------------
+# resolve any pending navigation before the widget is drawn
+_NAV_OPTIONS = ["🏠 Home", "💶 Budget", "📊 Portfolio"]
+if "_nav_pending" in st.session_state:
+    _pending = st.session_state.pop("_nav_pending")
+    if _pending in _NAV_OPTIONS:
+        st.session_state["main_nav"] = _pending
+
 with st.sidebar:
     st.title("📈 Mijn Financiën")
     st.markdown("---")
 
     _section = st.radio(
         "Navigatie",
-        options=["💶 Budget", "📊 Portfolio"],
+        options=_NAV_OPTIONS,
         label_visibility="collapsed",
         key="main_nav",
     )
 
     st.markdown("---")
 
+# collapse sidebar entirely on the home screen
+if _section == "🏠 Home":
+    st.markdown("""
+    <style>
+        [data-testid="stSidebar"] { display: none; }
+        [data-testid="collapsedControl"] { display: none; }
+    </style>
+    """, unsafe_allow_html=True)
+
+with st.sidebar:
     # ---- Portfolio sidebar ----
     if _section == "📊 Portfolio":
         st.subheader("Upload Transactions")
@@ -184,7 +201,7 @@ with st.sidebar:
         st.caption("Data stored locally in `data/portfolio.db`")
 
     # ---- Budget sidebar ----
-    else:
+    elif _section == "💶 Budget":
         _all_months = database.list_budget_months()
         _cur_month  = finance_tracker.today_month()
         _month_options = sorted(set(_all_months + [_cur_month]), reverse=True)
@@ -260,9 +277,49 @@ summary           = portfolio.calculate_portfolio_summary(positions, transaction
 
 
 # ===========================================================================
+# HOME / WELCOME SCREEN
+# ===========================================================================
+if _section == "🏠 Home":
+    st.title("👋 Welkom bij Mijn Financiën")
+    st.markdown("Kies een sectie om te beginnen.")
+    st.markdown("---")
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("### 💶 Budget")
+        st.markdown(
+            "Bijhouden van maandelijkse inkomsten en uitgaven. "
+            "Stel budgetten in, log transacties en bekijk je financiële overzicht."
+        )
+        total_invested_display = f"€{summary['net_investment']:,.2f}" if summary.get('net_investment') else "—"
+        _bgt_months = database.list_budget_months()
+        st.metric("Maanden bijgehouden", len(_bgt_months))
+        if st.button("Ga naar Budget →", key="home_to_budget", use_container_width=True):
+            st.session_state["_nav_pending"] = "💶 Budget"
+            st.rerun()
+
+    with col_b:
+        st.markdown("### 📊 Portfolio")
+        st.markdown(
+            "Inzicht in je beleggingsportfolio. "
+            "Bekijk posities, rendement, dividenden en herbalanceer je allocatie."
+        )
+        if summary.get("prices_available"):
+            _pf_val = summary.get("total_value", 0)
+            st.metric("Huidige waarde", f"€{_pf_val:,.2f}")
+        else:
+            st.metric("Transacties", len(transactions))
+        if st.button("Ga naar Portfolio →", key="home_to_portfolio", use_container_width=True):
+            st.session_state["_nav_pending"] = "📊 Portfolio"
+            st.rerun()
+
+    st.stop()
+
+# ===========================================================================
 # BUDGET SECTION
 # ===========================================================================
-if _section == "💶 Budget":
+elif _section == "💶 Budget":
 
     st.title("💶 Maandbudget")
 
@@ -545,6 +602,9 @@ if _section == "💶 Budget":
 
     st.stop()
 
+# ===========================================================================
+# PORTFOLIO SECTION
+# ===========================================================================
 # Main dashboard
 # ---------------------------------------------------------------------------
 st.title("📊 My Portfolio Dashboard")
