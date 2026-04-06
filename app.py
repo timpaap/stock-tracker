@@ -47,6 +47,92 @@ import finance_tracker
 
 
 # ---------------------------------------------------------------------------
+# Benchmark data — cached so yfinance is only called once per session
+# ---------------------------------------------------------------------------
+# Tickers that are priced in USD and must be converted to EUR for a fair
+# comparison with a EUR-based portfolio.
+_USD_BENCHMARK_TICKERS = {"SPY", "FEZ"}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_benchmark_prices(start_date_iso: str) -> dict:
+    """
+    Fetches daily total-return closing prices for all benchmark tickers from
+    *start_date_iso* until today.  Returns a dict of {label: pd.Series}.
+
+    - auto_adjust=True so dividends are reinvested (total-return basis),
+      matching the portfolio's total-return TWR.
+    - USD-denominated benchmarks (SPY, FEZ) are converted to EUR using the
+      daily EURUSD=X rate so all lines are on the same currency basis.
+
+    Cached for 1 hour so the page doesn't re-fetch on every interaction.
+    """
+    import yfinance as yf
+    import pandas as pd
+    from datetime import date, timedelta
+
+    end_date  = (date.today() + timedelta(days=1)).isoformat()
+    tickers   = list(charts.BENCHMARK_TICKERS.values())
+    label_map = {v: k for k, v in charts.BENCHMARK_TICKERS.items()}
+    result: dict = {}
+
+    # --- Fetch EUR/USD daily rate for currency conversion ---
+    eurusd: pd.Series | None = None
+    try:
+        fx_raw = yf.download(
+            "EURUSD=X",
+            start=start_date_iso,
+            end=end_date,
+            auto_adjust=True,
+            progress=False,
+        )
+        if not fx_raw.empty:
+            if isinstance(fx_raw.columns, pd.MultiIndex):
+                eurusd = fx_raw["Close"]["EURUSD=X"].dropna()
+            else:
+                eurusd = fx_raw["Close"].dropna()
+    except Exception as e:
+        print(f"Warning: could not fetch EURUSD rate: {e}")
+
+    # Helper: convert a USD-priced Series to EUR using forward-filled daily rate
+    def _to_eur(series: pd.Series) -> pd.Series:
+        if eurusd is None or eurusd.empty:
+            return series   # fallback: leave in USD if FX fetch failed
+        # Reindex FX to the benchmark's dates, forward-fill missing weekends
+        fx_aligned = eurusd.reindex(series.index, method="ffill")
+        return series / fx_aligned
+
+    try:
+        raw = yf.download(
+            tickers,
+            start=start_date_iso,
+            end=end_date,
+            auto_adjust=True,   # total-return (dividends reinvested)
+            progress=False,
+        )
+        if isinstance(raw.columns, pd.MultiIndex):
+            close_df = raw["Close"]
+            for ticker in tickers:
+                if ticker in close_df.columns:
+                    series = close_df[ticker].dropna()
+                    if not series.empty:
+                        if ticker in _USD_BENCHMARK_TICKERS:
+                            series = _to_eur(series)
+                        result[label_map[ticker]] = series
+        else:
+            if len(tickers) == 1:
+                series = raw["Close"].dropna()
+                if not series.empty:
+                    if tickers[0] in _USD_BENCHMARK_TICKERS:
+                        series = _to_eur(series)
+                    result[label_map[tickers[0]]] = series
+    except Exception as e:
+        print(f"Warning: could not fetch benchmark prices: {e}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Page configuration — must be the first Streamlit call in the file
 # ---------------------------------------------------------------------------
 st.set_page_config(
@@ -863,6 +949,56 @@ with tab1:
         )
     else:
         st.info("No fully closed positions found.")
+
+    st.markdown("---")
+
+    # --- Benchmark Comparison ---
+    st.subheader("📐 Benchmark Comparison")
+    st.caption(
+        "All lines are on a **total-return** basis (dividends included). "
+        "S&P 500 (SPY) and EURO STOXX 50 (FEZ) are converted from USD to EUR using daily FX rates. "
+        "Portfolio uses time-weighted returns (TWR) so new deposits don't distort the line. "
+        "Data fetched from Yahoo Finance and cached for 1 hour."
+    )
+
+    if transactions:
+        _first_tx_date = min(t["date"] for t in transactions)
+        # Extend the start date slightly earlier so benchmarks cover the full period
+        import datetime as _dt
+        _bm_start = (
+            _dt.date.fromisoformat(_first_tx_date) - _dt.timedelta(days=5)
+        ).isoformat()
+
+        with st.spinner("Fetching benchmark prices…"):
+            _benchmark_prices = _fetch_benchmark_prices(_bm_start)
+
+        if not _benchmark_prices:
+            st.warning(
+                "⚠️ Could not fetch benchmark data from Yahoo Finance. "
+                "Check your internet connection and try again."
+            )
+        else:
+            st.plotly_chart(
+                charts.benchmark_indexed_chart(transactions, prices, _benchmark_prices, dividends),
+                key="chart_bm_indexed",
+                width="stretch",
+            )
+
+            _bm_col1, _bm_col2 = st.columns(2)
+            with _bm_col1:
+                st.plotly_chart(
+                    charts.benchmark_rolling_return_chart(transactions, prices, _benchmark_prices, dividends),
+                    key="chart_bm_rolling",
+                    width="stretch",
+                )
+            with _bm_col2:
+                st.plotly_chart(
+                    charts.benchmark_ytd_chart(transactions, prices, _benchmark_prices, dividends),
+                    key="chart_bm_ytd",
+                    width="stretch",
+                )
+    else:
+        st.info("Upload transactions to see benchmark comparisons.")
 
 
 # ===========================================================================

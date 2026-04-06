@@ -726,3 +726,472 @@ def rebalancing_chart(
         margin=dict(t=80, b=20, l=20, r=20),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Benchmark comparison helpers
+# ---------------------------------------------------------------------------
+
+BENCHMARK_TICKERS = {
+    "S&P 500 (SPY)":        "SPY",
+    "EURO STOXX 50 (FEZ)":  "FEZ",
+    "EURO STOXX 600 (EXSA.DE)": "EXSA.DE",
+}
+
+BENCHMARK_COLOURS = {
+    "S&P 500 (SPY)":            "#ef5350",   # red
+    "EURO STOXX 50 (FEZ)":      "#ffa726",   # orange
+    "EURO STOXX 600 (EXSA.DE)": "#ab47bc",   # purple
+}
+
+PORTFOLIO_COLOUR = "#26a69a"  # teal
+
+
+def _build_portfolio_daily_series(
+    transactions: list[dict],
+    prices: dict[str, dict],
+    dividends: list[dict] | None = None,
+) -> list[tuple[list, list, list]]:
+    """
+    Builds a daily portfolio value series, split into contiguous segments.
+
+    Returns a list of (dates, values, cashflows) tuples.  A new segment begins
+    whenever the portfolio is completely liquidated (all positions at zero) and
+    then re-enters the market.  Chaining TWR across segments avoids phantom
+    losses that would otherwise appear when the gap-period prev_value is used
+    as the denominator for a fresh investment.
+
+    Dividends are treated as part of the portfolio value (total-return basis).
+    Each dividend payment is added to day_value on the ex-date so the TWR
+    line reflects the same total return as a dividend-reinvesting benchmark.
+
+    For positions where yfinance has no historical data for a given period
+    (e.g. a ticker that only became available recently), the weighted-average
+    cost basis is used as the price instead of today's spot price.  This
+    prevents phantom gains from being injected into the TWR on the purchase
+    date.  When actual historical data resumes the transition reflects the
+    real accumulated gain or loss during the gap.
+
+    Cashflows from days that cannot be priced (can_value=False) are carried
+    forward to the next successfully priced day.
+    """
+    if not transactions:
+        return []
+
+    first_date = min(datetime.date.fromisoformat(t["date"]) for t in transactions)
+    today      = datetime.date.today()
+    date_range = pd.date_range(start=first_date, end=today, freq="D")
+
+    # Build ticker→isin and fetch historical prices
+    ticker_to_isin: dict[str, str] = {}
+    for isin, p in prices.items():
+        if p.get("ticker"):
+            ticker_to_isin[p["ticker"]] = isin
+
+    tickers = list(ticker_to_isin.keys())
+    hist_prices: dict[str, pd.Series] = {}
+
+    if tickers:
+        try:
+            raw = yf.download(
+                tickers,
+                start=first_date.isoformat(),
+                end=(today + datetime.timedelta(days=1)).isoformat(),
+                auto_adjust=False,   # raw prices so execution prices match historical prices
+                progress=False,
+            )
+            if isinstance(raw.columns, pd.MultiIndex):
+                close_df = raw["Close"]
+                for ticker in tickers:
+                    if ticker in close_df.columns:
+                        series = close_df[ticker].dropna()
+                        if not series.empty:
+                            isin = ticker_to_isin[ticker]
+                            hist_prices[isin] = series
+            else:
+                if len(tickers) == 1:
+                    series = raw["Close"].dropna()
+                    if not series.empty:
+                        isin = ticker_to_isin[tickers[0]]
+                        hist_prices[isin] = series
+        except Exception as e:
+            print(f"Warning: could not fetch historical prices for portfolio: {e}")
+
+    # Build a sorted list of (date_str, net_eur) for dividends so we can
+    # accumulate them in a single forward pass alongside the price loop.
+    sorted_divs = sorted(
+        (d for d in (dividends or []) if d.get("date") and d.get("net_eur") is not None),
+        key=lambda d: d["date"],
+    )
+    div_idx              = 0
+    cumulative_div_eur   = 0.0   # running total of all dividends received so far
+
+    sorted_tx = sorted(transactions, key=lambda t: t["date"])
+    tx_idx = 0
+    shares_held: dict[str, float] = {}
+    # Weighted-average cost basis per share — used as price fallback when
+    # no historical market data is available for a given period.
+    cost_basis_per_share: dict[str, float] = {}
+
+    segments: list[tuple[list, list, list]] = []
+    seg_dates:  list[datetime.date] = []
+    seg_values: list[float]         = []
+    seg_cfs:    list[float]         = []
+    pending_cf: float = 0.0
+
+    for day in date_range:
+        day_date = day.date()
+        day_ts   = pd.Timestamp(day_date)
+
+        # Accumulate dividends up to and including this day
+        while div_idx < len(sorted_divs) and sorted_divs[div_idx]["date"] <= str(day_date):
+            cumulative_div_eur += sorted_divs[div_idx]["net_eur"]
+            div_idx += 1
+
+        cf_today = 0.0
+        while tx_idx < len(sorted_tx) and sorted_tx[tx_idx]["date"] <= str(day_date):
+            t    = sorted_tx[tx_idx]
+            isin = t["isin"]
+            qty  = t["quantity"]
+            cost = abs(t["total_eur"]) if t["total_eur"] is not None else 0.0
+            if t["transaction_type"] == "BUY":
+                old_qty   = shares_held.get(isin, 0.0)
+                old_basis = cost_basis_per_share.get(isin, 0.0)
+                new_qty   = old_qty + qty
+                buy_price = cost / qty if qty > 0 else 0.0
+                cost_basis_per_share[isin] = (
+                    (old_qty * old_basis + qty * buy_price) / new_qty
+                    if new_qty > 0 else 0.0
+                )
+                shares_held[isin] = new_qty
+                cf_today += cost
+            elif t["transaction_type"] == "SELL":
+                shares_held[isin] = max(shares_held.get(isin, 0.0) - qty, 0.0)
+                cf_today -= cost
+            tx_idx += 1
+
+        is_in_market = any(v > 0 for v in shares_held.values())
+
+        if not is_in_market:
+            # Portfolio is fully liquidated — close the current segment.
+            if seg_dates:
+                segments.append((seg_dates, seg_values, seg_cfs))
+                seg_dates, seg_values, seg_cfs = [], [], []
+            pending_cf = 0.0
+            continue
+
+        pending_cf += cf_today
+
+        day_value = 0.0
+        can_value = True
+        for isin, qty in shares_held.items():
+            if qty <= 0:
+                continue
+            if isin in hist_prices:
+                avail = hist_prices[isin][hist_prices[isin].index <= day_ts].dropna()
+                if not avail.empty:
+                    # Actual historical market price — ideal case.
+                    day_value += qty * float(avail.iloc[-1])
+                else:
+                    # Historical data exists but doesn't cover this period
+                    # (e.g. ticker only listed recently).  Use cost basis so
+                    # no phantom return is injected on the purchase date.
+                    if isin in cost_basis_per_share:
+                        day_value += qty * cost_basis_per_share[isin]
+                    else:
+                        can_value = False
+                        break
+            else:
+                # No historical data fetched.  Use cost basis rather than
+                # today's spot price to keep the TWR clean.
+                if isin in cost_basis_per_share:
+                    day_value += qty * cost_basis_per_share[isin]
+                else:
+                    can_value = False
+                    break
+
+        if not can_value:
+            # Carry pending_cf forward to the next successfully priced day.
+            continue
+
+        # Add cumulative dividends on a total-return basis so the portfolio
+        # line is comparable to a dividend-reinvesting benchmark index.
+        total_return_value = day_value + cumulative_div_eur
+
+        seg_dates.append(day_date)
+        seg_values.append(round(total_return_value, 4))
+        seg_cfs.append(round(pending_cf, 4))
+        pending_cf = 0.0
+
+    if seg_dates:
+        segments.append((seg_dates, seg_values, seg_cfs))
+
+    return segments
+
+
+def _compute_twr_index(
+    segments: list[tuple[list, list, list]],
+    base: float = 100.0,
+) -> pd.Series:
+    """
+    Computes a daily time-weighted return (TWR) index starting at `base`.
+
+    Accepts a list of contiguous-investment segments as returned by
+    _build_portfolio_daily_series().  Within each segment:
+
+        daily_return = V(d) / (V(d-1) + CF(d))
+
+    where CF(d) is the net cash deposited on day d.
+
+    Segments are chained: the endpoint of segment N becomes the starting level
+    for segment N+1, so a complete portfolio liquidation followed by
+    re-investment creates no phantom loss — the new sub-period continues
+    seamlessly from where the previous one left off.
+
+    Returns a pd.Series indexed by date.
+    """
+    if not segments:
+        return pd.Series(dtype=float)
+
+    all_dates: list = []
+    all_vals:  list = []
+    running_level   = base
+
+    for seg_dates, seg_values, seg_cfs in segments:
+        seg_index = [running_level]
+        for i in range(1, len(seg_dates)):
+            prev_v    = seg_values[i - 1]
+            cf        = seg_cfs[i]
+            denom     = prev_v + cf
+            daily_ret = seg_values[i] / denom if denom > 0 else 1.0
+            seg_index.append(round(seg_index[-1] * daily_ret, 6))
+        all_dates.extend(seg_dates)
+        all_vals.extend(seg_index)
+        running_level = seg_index[-1]
+
+    return pd.Series(all_vals, index=pd.to_datetime(all_dates))
+
+
+def benchmark_indexed_chart(
+    transactions: list[dict],
+    prices: dict[str, dict],
+    benchmark_prices: dict[str, pd.Series],
+    dividends: list[dict] | None = None,
+) -> go.Figure:
+    """
+    Line chart with portfolio and benchmarks all indexed to 100 on the first
+    transaction date.  Uses time-weighted returns for the portfolio so that
+    new deposits do not inflate the line.
+
+    Parameters
+    ----------
+    transactions      : from database.load_transactions()
+    prices            : from database.load_prices()
+    benchmark_prices  : dict label → pd.Series of daily closing prices (EUR)
+    dividends         : from database.load_dividends() — added for total-return
+    """
+    if not transactions:
+        return _empty_figure("No transactions found.")
+
+    segments = _build_portfolio_daily_series(transactions, prices, dividends)
+    if not segments:
+        return _empty_figure("Not enough price data to build portfolio history.")
+
+    twr = _compute_twr_index(segments)
+    start_date = segments[0][0][0]
+
+    fig = go.Figure()
+
+    # Portfolio TWR line
+    fig.add_trace(go.Scatter(
+        x=twr.index,
+        y=twr.values,
+        mode="lines",
+        name="My Portfolio (TWR)",
+        line=dict(color=PORTFOLIO_COLOUR, width=2.5),
+        hovertemplate="<b>%{x|%d %b %Y}</b><br>Portfolio: %{y:.1f}<extra></extra>",
+    ))
+
+    # Benchmark lines
+    for label, series in benchmark_prices.items():
+        series   = series.dropna()
+        if series.empty:
+            continue
+        # Find the base value on or just after the start date
+        avail    = series[series.index >= pd.Timestamp(start_date)]
+        if avail.empty:
+            continue
+        base_val = float(avail.iloc[0])
+        indexed  = (series / base_val * 100.0).loc[avail.index[0]:]
+
+        fig.add_trace(go.Scatter(
+            x=indexed.index,
+            y=indexed.values,
+            mode="lines",
+            name=label,
+            line=dict(color=BENCHMARK_COLOURS.get(label, "#888"), width=2),
+            hovertemplate=f"<b>%{{x|%d %b %Y}}</b><br>{label}: %{{y:.1f}}<extra></extra>",
+        ))
+
+    # Reference line at 100
+    fig.add_hline(y=100, line_dash="dot", line_color="#aaa", line_width=1)
+
+    fig.update_layout(
+        title=dict(text="Portfolio vs Benchmarks — Indexed to 100", font=dict(size=18)),
+        xaxis_title="Date",
+        yaxis_title="Index (100 = start)",
+        hovermode="x unified",
+        legend=dict(orientation="h", y=-0.18),
+        margin=dict(t=60, b=80, l=60, r=60),
+        paper_bgcolor="white",
+        plot_bgcolor="#fafafa",
+        yaxis=dict(gridcolor="#eeeeee"),
+        xaxis=dict(gridcolor="#eeeeee"),
+    )
+    return fig
+
+
+def benchmark_rolling_return_chart(
+    transactions: list[dict],
+    prices: dict[str, dict],
+    benchmark_prices: dict[str, pd.Series],
+    dividends: list[dict] | None = None,
+    window_days: int = 91,
+) -> go.Figure:
+    """
+    Rolling 3-month return for portfolio (TWR) and benchmarks.
+
+    For each date, the rolling return is:
+        (index[d] / index[d - window_days]) - 1   expressed as %
+    """
+    if not transactions:
+        return _empty_figure("No transactions found.")
+
+    segments = _build_portfolio_daily_series(transactions, prices, dividends)
+    if not segments:
+        return _empty_figure("Not enough price data to build portfolio history.")
+
+    twr = _compute_twr_index(segments)
+    rolling_portfolio = twr.pct_change(periods=window_days) * 100
+    rolling_portfolio = rolling_portfolio.dropna()
+
+    fig = go.Figure()
+
+    if not rolling_portfolio.empty:
+        fig.add_trace(go.Scatter(
+            x=rolling_portfolio.index,
+            y=rolling_portfolio.values,
+            mode="lines",
+            name="My Portfolio (TWR)",
+            line=dict(color=PORTFOLIO_COLOUR, width=2.5),
+            hovertemplate="<b>%{x|%d %b %Y}</b><br>Portfolio: %{y:.1f}%<extra></extra>",
+        ))
+
+    for label, series in benchmark_prices.items():
+        series  = series.dropna()
+        rolling = series.pct_change(periods=window_days) * 100
+        rolling = rolling.dropna()
+        if rolling.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=rolling.index,
+            y=rolling.values,
+            mode="lines",
+            name=label,
+            line=dict(color=BENCHMARK_COLOURS.get(label, "#888"), width=2),
+            hovertemplate=f"<b>%{{x|%d %b %Y}}</b><br>{label}: %{{y:.1f}}%<extra></extra>",
+        ))
+
+    # Zero reference line
+    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", line_width=1)
+
+    fig.update_layout(
+        title=dict(text="Rolling 3-Month Return vs Benchmarks", font=dict(size=18)),
+        xaxis_title="Date",
+        yaxis_title="3-Month Return (%)",
+        hovermode="x unified",
+        legend=dict(orientation="h", y=-0.18),
+        margin=dict(t=60, b=80, l=60, r=60),
+        paper_bgcolor="white",
+        plot_bgcolor="#fafafa",
+        yaxis=dict(gridcolor="#eeeeee", ticksuffix="%"),
+        xaxis=dict(gridcolor="#eeeeee"),
+    )
+    return fig
+
+
+def benchmark_ytd_chart(
+    transactions: list[dict],
+    prices: dict[str, dict],
+    benchmark_prices: dict[str, pd.Series],
+    dividends: list[dict] | None = None,
+) -> go.Figure:
+    """
+    Year-to-date return from January 1st of the current year.
+
+    All lines start at 0% on the first available trading day on/after Jan 1.
+    Uses TWR for the portfolio.
+    """
+    if not transactions:
+        return _empty_figure("No transactions found.")
+
+    segments = _build_portfolio_daily_series(transactions, prices, dividends)
+    if not segments:
+        return _empty_figure("Not enough price data to build portfolio history.")
+
+    twr   = _compute_twr_index(segments)
+    jan_1 = pd.Timestamp(datetime.date.today().year, 1, 1)
+
+    # First day of the TWR series on or after Jan 1
+    ytd_twr = twr[twr.index >= jan_1]
+    if ytd_twr.empty:
+        return _empty_figure("No portfolio data available for this year yet.")
+
+    base_twr = float(ytd_twr.iloc[0])
+    ytd_pf   = (ytd_twr / base_twr - 1.0) * 100
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=ytd_pf.index,
+        y=ytd_pf.values,
+        mode="lines",
+        name="My Portfolio (TWR)",
+        line=dict(color=PORTFOLIO_COLOUR, width=2.5),
+        hovertemplate="<b>%{x|%d %b %Y}</b><br>Portfolio: %{y:.2f}%<extra></extra>",
+    ))
+
+    for label, series in benchmark_prices.items():
+        series  = series.dropna()
+        ytd_bm  = series[series.index >= jan_1]
+        if ytd_bm.empty:
+            continue
+        base_bm = float(ytd_bm.iloc[0])
+        pct_bm  = (ytd_bm / base_bm - 1.0) * 100
+
+        fig.add_trace(go.Scatter(
+            x=pct_bm.index,
+            y=pct_bm.values,
+            mode="lines",
+            name=label,
+            line=dict(color=BENCHMARK_COLOURS.get(label, "#888"), width=2),
+            hovertemplate=f"<b>%{{x|%d %b %Y}}</b><br>{label}: %{{y:.2f}}%<extra></extra>",
+        ))
+
+    # Zero reference line
+    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", line_width=1)
+
+    year = datetime.date.today().year
+    fig.update_layout(
+        title=dict(text=f"Year-to-Date Return {year} vs Benchmarks", font=dict(size=18)),
+        xaxis_title="Date",
+        yaxis_title=f"YTD Return (%, base = 1 Jan {year})",
+        hovermode="x unified",
+        legend=dict(orientation="h", y=-0.18),
+        margin=dict(t=60, b=80, l=60, r=60),
+        paper_bgcolor="white",
+        plot_bgcolor="#fafafa",
+        yaxis=dict(gridcolor="#eeeeee", ticksuffix="%"),
+        xaxis=dict(gridcolor="#eeeeee"),
+    )
+    return fig
