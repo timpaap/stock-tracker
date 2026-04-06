@@ -962,41 +962,63 @@ with tab1:
     )
 
     if transactions:
-        _first_tx_date = min(t["date"] for t in transactions)
-        # Extend the start date slightly earlier so benchmarks cover the full period
-        import datetime as _dt
-        _bm_start = (
-            _dt.date.fromisoformat(_first_tx_date) - _dt.timedelta(days=5)
-        ).isoformat()
+        _asset_cats = database.load_asset_categories()
+        _bond_isins = {isin for isin, cat in _asset_cats.items() if cat == "Bond"}
 
-        with st.spinner("Fetching benchmark prices…"):
-            _benchmark_prices = _fetch_benchmark_prices(_bm_start)
+        _exclude_bonds = st.checkbox(
+            "Exclude bond positions from performance",
+            value=True,
+            help="Bond ETFs are treated as savings — excluding them shows your equity-only investment performance.",
+            key="bm_exclude_bonds",
+        )
 
-        if not _benchmark_prices:
-            st.warning(
-                "⚠️ Could not fetch benchmark data from Yahoo Finance. "
-                "Check your internet connection and try again."
-            )
+        _bm_transactions = (
+            [t for t in transactions if t["isin"] not in _bond_isins]
+            if _exclude_bonds else transactions
+        )
+        _bm_dividends = (
+            [d for d in dividends if d.get("isin") not in _bond_isins]
+            if _exclude_bonds else dividends
+        )
+
+        if not _bm_transactions:
+            st.info("No transactions to display after filtering.")
         else:
-            st.plotly_chart(
-                charts.benchmark_indexed_chart(transactions, prices, _benchmark_prices, dividends),
-                key="chart_bm_indexed",
-                width="stretch",
-            )
+            _first_tx_date = min(t["date"] for t in _bm_transactions)
+            # Extend the start date slightly earlier so benchmarks cover the full period
+            import datetime as _dt
+            _bm_start = (
+                _dt.date.fromisoformat(_first_tx_date) - _dt.timedelta(days=5)
+            ).isoformat()
 
-            _bm_col1, _bm_col2 = st.columns(2)
-            with _bm_col1:
+            with st.spinner("Fetching benchmark prices…"):
+                _benchmark_prices = _fetch_benchmark_prices(_bm_start)
+
+            if not _benchmark_prices:
+                st.warning(
+                    "⚠️ Could not fetch benchmark data from Yahoo Finance. "
+                    "Check your internet connection and try again."
+                )
+            else:
                 st.plotly_chart(
-                    charts.benchmark_rolling_return_chart(transactions, prices, _benchmark_prices, dividends),
-                    key="chart_bm_rolling",
+                    charts.benchmark_indexed_chart(_bm_transactions, prices, _benchmark_prices, _bm_dividends),
+                    key="chart_bm_indexed",
                     width="stretch",
                 )
-            with _bm_col2:
-                st.plotly_chart(
-                    charts.benchmark_ytd_chart(transactions, prices, _benchmark_prices, dividends),
-                    key="chart_bm_ytd",
-                    width="stretch",
-                )
+
+                _bm_col1, _bm_col2 = st.columns(2)
+                with _bm_col1:
+                    st.plotly_chart(
+                        charts.benchmark_rolling_return_chart(_bm_transactions, prices, _benchmark_prices, _bm_dividends),
+                        key="chart_bm_rolling",
+                        width="stretch",
+                    )
+                with _bm_col2:
+                    st.plotly_chart(
+                        charts.benchmark_ytd_chart(_bm_transactions, prices, _benchmark_prices, _bm_dividends),
+                        key="chart_bm_ytd",
+                        width="stretch",
+                    )
     else:
         st.info("Upload transactions to see benchmark comparisons.")
 
