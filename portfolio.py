@@ -173,10 +173,6 @@ def refresh_all_prices() -> dict[str, dict]:
         isin = row["isin"]
         name = row["name"]
 
-        if isin in cached and cached[isin].get("currency") == "EUR" and cached[isin].get("price"):
-            print(f"  Skipping {isin} — EUR price already cached")
-            continue
-
         result = fetch_price_for_isin(isin, name)
         if result:
             database.save_price(
